@@ -12,7 +12,7 @@
  *   scroll  — 滚动页面到指定位置或元素
  */
 import { Type } from "@sinclair/typebox";
-import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js";
+import type { ToolDefinition, ToolCallResult } from "../core/tool-registry.js";
 
 export function createNavigateTool(): ToolDefinition {
   return {

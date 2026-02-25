@@ -289,11 +289,11 @@ Service Worker (后台)                    Content Script (页面)
 
 ```typescript
 // Service Worker 端
-import { createProxyExecutor } from "autopilot/web/tools/messaging";
+import { createProxyExecutor } from "agentpage";
 const execute = createProxyExecutor();
 
 // Content Script 端
-import { registerToolHandler } from "autopilot/web/tools/messaging";
+import { registerToolHandler } from "agentpage";
 registerToolHandler(executorMap);
 ```
 

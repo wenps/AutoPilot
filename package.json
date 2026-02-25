@@ -1,5 +1,5 @@
 {
-  "name": "autopilot",
+  "name": "agentpage",
   "version": "0.2.0",
   "description": "Embeddable AI Agent SDK for browsers — let AI operate your web pages via tool-calling",
   "keywords": [
@@ -13,10 +13,24 @@
   "license": "MIT",
   "author": "",
   "type": "module",
-  "main": "dist/web/index.js",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsdown",
-    "check": "tsc --noEmit -p src/web/tsconfig.json && pnpm lint",
+    "check": "tsc --noEmit && pnpm lint",
     "lint": "oxlint",
     "format": "oxfmt --write",
     "format:check": "oxfmt --check",

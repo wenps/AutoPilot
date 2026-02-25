@@ -10,7 +10,7 @@
  *   wait_for_text      — 等待页面中出现指定文本
  */
 import { Type } from "@sinclair/typebox";
-import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js";
+import type { ToolDefinition, ToolCallResult } from "../core/tool-registry.js";
 
 /** 默认超时时间（毫秒） */
 const DEFAULT_TIMEOUT = 10_000;

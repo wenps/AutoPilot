@@ -15,7 +15,7 @@
  *   remove_class — 移除 CSS 类名
  */
 import { Type } from "@sinclair/typebox";
-import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js";
+import type { ToolDefinition, ToolCallResult } from "../core/tool-registry.js";
 
 const DEFAULT_WAIT_MS = 1000;
 

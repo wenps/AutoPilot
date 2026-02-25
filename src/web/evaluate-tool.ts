@@ -12,7 +12,7 @@
  *   evaluate_handle — 执行 JS 并返回序列化的 DOM 信息
  */
 import { Type } from "@sinclair/typebox";
-import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js";
+import type { ToolDefinition, ToolCallResult } from "../core/tool-registry.js";
 
 /**
  * 安全执行 JS 表达式，捕获错误并序列化结果。

@@ -21,8 +21,8 @@
  *   ┌──────────────────────────────────────────────────┐
  *   │  WebAgent（浏览器端入口）                         │
  *   │  ┌──────────┐  ┌────────────┐  ┌──────────────┐ │
- *   │  │ core/    │  │ core/      │  │ web/tools/   │ │
- *   │  │ ai-client│  │ agent-loop │  │ (DOM/导航等) │ │
+ *   │  │ core/    │  │ core/      │  │ web/       │ │
+ *   │  │ ai-client│  │ agent-loop │  │ (DOM/导航等)│ │
  *   │  │ (fetch)  │  │ (通用循环) │  │              │ │
  *   │  └──────────┘  └────────────┘  └──────────────┘ │
  *   └──────────────────────────────────────────────────┘
@@ -33,12 +33,16 @@ import {
   type AgentLoopResult,
 } from "../core/agent-loop/index.js";
 import type { AIMessage } from "../core/types.js";
-import { createAIClient, type AIClientConfig } from "../core/ai-client/index.js";
+import { createAIClient } from "../core/ai-client/index.js";
 import type { AIClient } from "../core/types.js";
 import { ToolRegistry, type ToolDefinition } from "../core/tool-registry.js";
 import { buildSystemPrompt } from "../core/system-prompt.js";
-import { registerWebTools } from "./tools/register.js";
-import { generateSnapshot, type SnapshotOptions } from "./tools/page-info-tool.js";
+import { generateSnapshot, type SnapshotOptions } from "./page-info-tool.js";
+import { createDomTool } from "./dom-tool.js";
+import { createNavigateTool } from "./navigate-tool.js";
+import { createPageInfoTool } from "./page-info-tool.js";
+import { createWaitTool } from "./wait-tool.js";
+import { createEvaluateTool } from "./evaluate-tool.js";
 
 // ─── 回调类型 ───
 
@@ -131,7 +135,11 @@ export class WebAgent {
 
   /** 注册所有内置 Web 工具（dom, navigate, page_info, wait, evaluate） */
   registerTools(): void {
-    registerWebTools(this.registry);
+    this.registry.register(createDomTool());
+    this.registry.register(createNavigateTool());
+    this.registry.register(createPageInfoTool());
+    this.registry.register(createWaitTool());
+    this.registry.register(createEvaluateTool());
   }
 
   /** 注册一个自定义工具 */
@@ -305,3 +313,20 @@ export class WebAgent {
     });
   }
 }
+
+// ─── Re-exports ───
+// 从入口文件统一导出所有公共 API，消费方只需 import from "agentpage"
+
+export { generateSnapshot, type SnapshotOptions } from "./page-info-tool.js";
+export { createDomTool } from "./dom-tool.js";
+export { createNavigateTool } from "./navigate-tool.js";
+export { createPageInfoTool } from "./page-info-tool.js";
+export { createWaitTool } from "./wait-tool.js";
+export { createEvaluateTool } from "./evaluate-tool.js";
+export {
+  createProxyExecutor,
+  registerToolHandler,
+  type ToolCallMessage,
+  type ToolCallResponse,
+  type ToolExecutorMap,
+} from "./messaging.js";

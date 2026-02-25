@@ -13,7 +13,7 @@
  *   query_all     — 查询所有匹配选择器的元素，返回摘要信息
  */
 import { Type } from "@sinclair/typebox";
-import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js";
+import type { ToolDefinition, ToolCallResult } from "../core/tool-registry.js";
 
 /** 快照配置选项 */
 export type SnapshotOptions = {
