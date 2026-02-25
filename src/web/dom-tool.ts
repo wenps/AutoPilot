@@ -16,82 +16,56 @@
  */
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition, ToolCallResult } from "../core/tool-registry.js";
+import type { RefStore } from "./ref-store.js";
 
 const DEFAULT_WAIT_MS = 1000;
+
+/** 当前活跃的 RefStore 实例（由 WebAgent 在 chat() 时设置） */
+let activeRefStore: RefStore | undefined;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * 通过快照 ref（XPath 路径）解析到 DOM 元素。
- *
- * ref 格式示例：/body/div[1]/main/form/input[2]
- * 每段为 tagName，可选 [n] 表示同标签兄弟中第 n 个（1-based）。
- */
-function resolveRef(ref: string): Element | null {
-  const segments = ref.split("/").filter(Boolean);
-  let current: Element | null = document.documentElement; // <html>
-
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    if (!current) return null;
-
-    // 解析 "tag" 或 "tag[n]"
-    const match = seg.match(/^([a-z0-9-]+)(?:\[(\d+)\])?$/i);
-    if (!match) return null;
-
-    const tag = match[1].toUpperCase();
-    const index = match[2] ? parseInt(match[2], 10) : 1; // 默认第 1 个
-
-    // 仅允许“首段即根节点”时命中当前节点（兼容 /html/...）
-    // 其他情况必须向下进入子节点，避免 /div[2]/div 这类连续同标签路径被错误跳过。
-    if (i === 0 && current.tagName === tag) {
-      continue;
-    }
-
-    // 在子元素中按标签名过滤并取第 index 个
-    const children: Element[] = Array.from(current.children).filter((c) => c.tagName === tag);
-    const sameTagCount = children.length;
-
-    if (sameTagCount === 0) return null;
-
-    // 如果同标签只有一个，无论 index 是什么都取它
-    if (sameTagCount === 1) {
-      current = children[0];
-    } else {
-      // 多个同标签兄弟，index 是 1-based
-      if (index < 1 || index > sameTagCount) return null;
-      current = children[index - 1];
-    }
-  }
-
-  return current;
-}
-
-/**
  * 安全地查询 DOM 元素。
  *
- * 支持两种定位方式：
- * - ref 路径（以 "/" 开头）：使用快照生成的 XPath 精确定位
+ * 支持两种定位方式（优先级从高到低）：
+ * - hash ID（以 "#" 开头且在 RefStore 中存在）：确定性 hash 查找（最高效）
  * - CSS 选择器（其他）：传统 querySelector
  */
 function queryElement(selector: string): Element | string {
   try {
-    // 以 "/" 开头视为快照 ref（XPath 路径）
-    if (selector.startsWith("/")) {
-      const el = resolveRef(selector);
-      if (!el) return `未找到 ref "${selector}" 对应的元素`;
-      return el;
+    // #hashId — 优先从 RefStore 查找
+    if (selector.startsWith("#") && activeRefStore) {
+      const id = selector.slice(1); // 去掉 #
+      if (activeRefStore.has(id)) {
+        const el = activeRefStore.get(id);
+        if (!el) return `未找到 ref "${selector}" 对应的元素（可能已被移除或快照已过期）`;
+        return el;
+      }
+      // 不在 RefStore 中 → 回退到 CSS 选择器（可能是 #some-id）
     }
 
-    // 否则走 CSS 选择器
+    // CSS 选择器
     const el = document.querySelector(selector);
     if (!el) return `未找到匹配 "${selector}" 的元素`;
     return el;
   } catch (e) {
     return `选择器语法错误: ${selector}`;
   }
+}
+
+/**
+ * 设置当前活跃的 RefStore（由 WebAgent 在 chat 开始时调用）。
+ */
+export function setActiveRefStore(store: RefStore | undefined): void {
+  activeRefStore = store;
+}
+
+/** 获取当前活跃的 RefStore（供其他工具复用） */
+export function getActiveRefStore(): RefStore | undefined {
+  return activeRefStore;
 }
 
 /**
@@ -169,8 +143,7 @@ export function createDomTool(): ToolDefinition {
     description: [
       "Perform DOM operations on the current page.",
       "Actions: click, fill, type, get_text, get_attr, set_attr, add_class, remove_class.",
-      "Use the ref path from the DOM snapshot (e.g. /body/main/button) as selector to precisely target elements.",
-      "CSS selectors are also supported but ref paths are preferred for accuracy.",
+      "Use the hash ID from DOM snapshot (e.g. #a1b2c) as selector.",
     ].join(" "),
 
     schema: Type.Object({
@@ -178,7 +151,7 @@ export function createDomTool(): ToolDefinition {
         description:
           "DOM action: click | fill | type | get_text | get_attr | set_attr | add_class | remove_class",
       }),
-      selector: Type.String({ description: "Element ref path from snapshot (e.g. /body/main/button[2]) or CSS selector" }),
+      selector: Type.String({ description: "Element ref ID from snapshot (e.g. #r0, #r5) or CSS selector" }),
       value: Type.Optional(
         Type.String({ description: "Value for fill/type/set_attr actions" }),
       ),

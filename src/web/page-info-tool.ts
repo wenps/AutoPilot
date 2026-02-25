@@ -14,6 +14,8 @@
  */
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition, ToolCallResult } from "../core/tool-registry.js";
+import type { RefStore } from "./ref-store.js";
+import { getActiveRefStore } from "./dom-tool.js";
 
 /** 快照配置选项 */
 export type SnapshotOptions = {
@@ -31,32 +33,30 @@ export type SnapshotOptions = {
    * 如果自身无意义，会被折叠——子元素直接提升到父级输出，减少嵌套噪音。
    */
   pruneLayout?: boolean;
+  /**
+   * hash ID 映射表（可选）。
+   * 传入 RefStore 实例后，每个元素使用确定性 hash ID 替代完整 XPath，
+   * 大幅减少 token 消耗。dom-tool 通过 RefStore.get(id) 解析回 DOM 元素。
+   */
+  refStore?: RefStore;
 };
 
 /**
  * 生成页面 DOM 快照 — 将 DOM 树转为 AI 可理解的文本描述。
  *
- * 类似 Playwright 的 ariaSnapshot()，但基于 Web API 实现。
- * 只遍历可见元素，跳过 script/style/svg 等无意义节点。
- *
- * 每个元素自动生成基于层级位置的 XPath 引用（ref），
- * AI 可以通过 ref 精确定位元素，无需猜测 CSS 选择器。
+ * 基于 Web API 实现，只遍历可见元素，跳过 script/style/svg 等无意义节点。
+ * 传入 RefStore 时，每个元素生成确定性 hash ID（如 #a1b2c），
+ * AI 通过 hash ID 精确定位元素，无需猜测 CSS 选择器。
  *
  * 输出格式示例：
- *   [header] ref="/body/header"
- *     [nav] ref="/body/header/nav"
- *       [a] "首页" href="/" ref="/body/header/nav/a[1]"
- *       [a] "关于" href="/about" ref="/body/header/nav/a[2]"
- *   [main] ref="/body/main"
- *     [h1] "欢迎来到示例网站" ref="/body/main/h1"
- *     [input] type="text" placeholder="搜索..." ref="/body/main/input"
- *     [button] "搜索" id="search-btn" onclick ref="/body/main/button"
- *
- * 增强信息：
- * - id：元素的 id 属性
- * - placeholder：输入框的占位文本
- * - 事件绑定：onclick/onchange 等内联事件处理器
- * - 状态属性：disabled/checked/readonly/required 等
+ *   [header] #k9f2a
+ *     [nav] #m3d7e
+ *       [a] "首页" href="/" #p1c4b
+ *       [a] "关于" href="/about" #q8e5f
+ *   [main] #r2a6d
+ *     [h1] "欢迎" #s7g3h
+ *     [input] type="text" placeholder="搜索..." #t4j8k
+ *     [button] "搜索" id="search-btn" onclick #u5n2m
  *
  * @param root - 快照根元素（默认 document.body）
  * @param options - 快照选项对象，或传入数字作为 maxDepth（向后兼容）
@@ -73,6 +73,8 @@ export function generateSnapshot(
   const maxDepth = opts.maxDepth ?? 6;
   const viewportOnly = opts.viewportOnly ?? true;
   const pruneLayout = opts.pruneLayout ?? true;
+
+  const refStore = opts.refStore;
 
   const SKIP_TAGS = new Set([
     "SCRIPT", "STYLE", "SVG", "NOSCRIPT", "LINK", "META", "BR", "HR",
@@ -172,21 +174,23 @@ export function generateSnapshot(
     const indent = "  ".repeat(depth);
     const tag = el.tagName.toLowerCase();
 
-    // 构建当前元素的 XPath
+    // 构建当前元素的内部路径（用于 hash 计算，不输出到快照）
     const index = getSiblingIndex(el);
     const currentPath = `${parentPath}/${tag}${index}`;
 
-    // 收集有意义的属性
+    // 收集有意义的属性（精简版：只保留对 AI 操作有用的信息）
     const attrs: string[] = [];
 
-    // 1. id — 最重要的标识信息，优先展示
+    // 1. id — 最重要的标识信息
     const elId = el.getAttribute("id");
     if (elId) attrs.push(`id="${elId}"`);
 
-    // 2. class — 关键 CSS 类名（最多 3 个）
+    // 2. class — 只保留有语义的类名（过滤框架 hash 类，最多 2 个）
     const className = el.getAttribute("class")?.trim();
     if (className) {
-      const classes = className.split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
+      const classes = className.split(/\s+/)
+        .filter(c => c && !c.startsWith("data-v-") && c.length < 30)
+        .slice(0, 2).join(" ");
       if (classes) attrs.push(`class="${classes}"`);
     }
 
@@ -201,7 +205,7 @@ export function generateSnapshot(
       if (el.hasAttribute(attr)) attrs.push(attr);
     }
 
-    // 5. 事件绑定 — 检测内联事件处理器（onclick, onchange 等）
+    // 5. 事件绑定 — 只检测有交互意义的事件（onclick, onchange）
     const events: string[] = [];
     for (const attrObj of Array.from(el.attributes)) {
       if (attrObj.name.startsWith(EVENT_PREFIX)) {
@@ -210,22 +214,21 @@ export function generateSnapshot(
     }
     if (events.length > 0) attrs.push(`events=[${events.join(",")}]`);
 
-    // 6. data-* 属性（常用于框架绑定，最多 3 个）
+    // 6. data-* 属性 — 只保留有语义价值的（跳过框架 scoped 标记如 data-v-xxx）
     const dataAttrs: string[] = [];
     for (const attrObj of Array.from(el.attributes)) {
-      if (attrObj.name.startsWith("data-") && dataAttrs.length < 3) {
+      if (attrObj.name.startsWith("data-") && !attrObj.name.match(/^data-v-/) && dataAttrs.length < 2) {
         dataAttrs.push(`${attrObj.name}="${attrObj.value.slice(0, 30)}"`);
       }
     }
     if (dataAttrs.length > 0) attrs.push(...dataAttrs);
 
-    // 7. 对于 input/textarea，补充当前实际 value（与 attribute 值可能不同）
+    // 7. 对于 input/textarea，补充当前实际 value
     if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && el.value) {
       const currentVal = el.value.slice(0, 60);
-      // 只在 attribute 中没有 value 或 value 不同时补充
       const attrVal = el.getAttribute("value");
       if (attrVal !== currentVal) {
-        attrs.push(`current-value="${currentVal}"`);
+        attrs.push(`val="${currentVal}"`);
       }
     }
 
@@ -245,7 +248,7 @@ export function generateSnapshot(
     if (isEmptyLayoutContainer(el, directText)) {
       const childLines: string[] = [];
       for (let i = 0; i < el.children.length; i++) {
-        // 子元素使用当前元素的完整路径（保证 ref 路径正确），但不增加缩进
+        // 子元素继承当前路径（保证 hash 计算正确），但不增加缩进
         const childResult = walk(el.children[i], depth, currentPath);
         if (childResult) childLines.push(childResult);
       }
@@ -253,11 +256,17 @@ export function generateSnapshot(
       return childLines.join("\n");
     }
 
-    // 构建当前元素描述：[标签] "文本" 属性 ref="XPath"
+    // 构建当前元素描述：[标签] "文本" 属性 #ID
     let line = `${indent}[${tag}]`;
-    if (directText) line += ` "${directText.slice(0, 80)}"`;
+    if (directText) line += ` "${directText.slice(0, 60)}"`;
     if (attrs.length) line += ` ${attrs.join(" ")}`;
-    line += ` ref="${currentPath}"`;
+    // 使用 hash ID（如 #a1b2c）或回退到完整 XPath
+    if (refStore) {
+      const hashId = refStore.set(el, currentPath);
+      line += ` #${hashId}`;
+    } else {
+      line += ` ref="${currentPath}"`;
+    }
 
     const lines: string[] = [line];
 
@@ -375,6 +384,7 @@ export function createPageInfoTool(): ToolDefinition {
               maxDepth,
               viewportOnly,
               pruneLayout,
+              refStore: getActiveRefStore(),
             });
             return { content: snapshot };
           }

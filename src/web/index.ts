@@ -38,11 +38,12 @@ import type { AIClient } from "../core/types.js";
 import { ToolRegistry, type ToolDefinition } from "../core/tool-registry.js";
 import { buildSystemPrompt } from "../core/system-prompt.js";
 import { generateSnapshot, type SnapshotOptions } from "./page-info-tool.js";
-import { createDomTool } from "./dom-tool.js";
+import { createDomTool, setActiveRefStore } from "./dom-tool.js";
 import { createNavigateTool } from "./navigate-tool.js";
 import { createPageInfoTool } from "./page-info-tool.js";
 import { createWaitTool } from "./wait-tool.js";
 import { createEvaluateTool } from "./evaluate-tool.js";
+import { RefStore } from "./ref-store.js";
 
 // ─── 回调类型 ───
 
@@ -246,29 +247,20 @@ export class WebAgent {
       buildSystemPrompt({ tools: this.registry.getDefinitions() });
 
     // ─── 自动快照：注入 system prompt，不污染对话历史 ───
+    // 创建本次对话的 RefStore，快照结束后保持活跃，对话结束后清空
+    const refStore = new RefStore(globalThis.location?.href);
+    setActiveRefStore(refStore);
+
     if (this.autoSnapshot) {
       try {
         const snapshot = generateSnapshot(document.body, {
           maxDepth: 8,
           ...this.snapshotOptions,
+          refStore,
         });
         this.callbacks.onSnapshot?.(snapshot);
 
-        systemPrompt += [
-          "\n\n## 当前页面 DOM 快照（实时生成）\n",
-          "每个元素末尾的 ref=\"...\" 是基于层级位置生成的唯一路径。",
-          "操作元素时，必须使用 ref 路径作为 selector 参数（如 /body/main/form/input）。\n",
-          "```",
-          snapshot,
-          "```\n",
-          "## 操作规则\n",
-          "1. 从快照中找到目标元素，复制其 ref 路径。",
-          "2. 将 ref 路径作为 dom 工具的 selector 参数传入。",
-          "3. 禁止猜测 CSS 选择器（如 \"button\"、\"#send\"），必须使用快照中的 ref。",
-          "4. 如果快照中看不到目标元素，先滚动页面或调整 maxDepth 获取更深的快照。",
-          "5. 先规划操作步骤，再按顺序逐步执行。",
-          "6. **语义选择**：当页面存在多个文本相同的元素时，严禁随意选择。必须根据 ref 路径的父级结构、周围兄弟元素、所在功能区域来判断哪个才是用户意图中的目标。例如聊天区的\"发送\"和表单的\"提交\"是不同功能，要结合用户当前操作的上下文来选择正确的元素。",
-        ].join("\n");
+        systemPrompt += `\n\n## 当前页面 DOM 快照\n\n\`\`\`\n${snapshot}\n\`\`\``;
       } catch {
         // 快照失败不阻塞正常流程
       }
@@ -290,6 +282,10 @@ export class WebAgent {
     if (this.memory) {
       this.history = result.messages;
     }
+
+    // 对话结束，清空 RefStore
+    refStore.clear();
+    setActiveRefStore(undefined);
 
     return result;
   }
