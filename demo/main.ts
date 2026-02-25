@@ -97,7 +97,11 @@ let sortDirection: "asc" | "desc" = "desc";
 
 // ─── 创建 Agent 实例 ───
 // baseURL 使用 Vite proxy 路径，代理到 GitHub Models API
-const agent = new WebAgent({ token: "", provider: "copilot", baseURL: "/api" });
+const agent = new WebAgent({
+  token: import.meta.env.GITHUB_TOKEN ?? "",
+  provider: "copilot",
+  baseURL: "/api",
+});
 agent.registerTools(); // 注册内置 Web 工具
 
 // 显示已注册的工具
@@ -325,6 +329,8 @@ function setupPlayground(): void {
   });
 
   confirmTaskBtn.addEventListener("click", () => {
+    console.log(111);
+    
     const title = taskTitleEl.value.trim();
     const priority = taskPriorityEl.value;
     const dueDate = taskDueDateEl.value;

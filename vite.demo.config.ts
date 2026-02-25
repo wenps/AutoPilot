@@ -11,6 +11,10 @@ import { defineConfig } from "vite";
 export default defineConfig({
   root: "demo",
 
+  // 暴露 GITHUB_TOKEN 环境变量到 import.meta.env
+  envDir: "..",
+  envPrefix: ["VITE_", "GITHUB_"],
+
   server: {
     port: 3000,
     open: true,

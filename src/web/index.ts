@@ -111,7 +111,7 @@ export class WebAgent {
 
   constructor(options: WebAgentOptions) {
     this.client = options.client;
-    this.token = options.token ?? "";
+    this.token = options.token || "";
     this.provider = options.provider ?? "copilot";
     this.model = options.model ?? "gpt-4o";
     this.baseURL = options.baseURL;
@@ -241,6 +241,7 @@ export class WebAgent {
           "3. 禁止猜测 CSS 选择器（如 \"button\"、\"#send\"），必须使用快照中的 ref。",
           "4. 如果快照中看不到目标元素，先滚动页面或调整 maxDepth 获取更深的快照。",
           "5. 先规划操作步骤，再按顺序逐步执行。",
+          "6. **语义选择**：当页面存在多个文本相同的元素时，严禁随意选择。必须根据 ref 路径的父级结构、周围兄弟元素、所在功能区域来判断哪个才是用户意图中的目标。例如聊天区的\"发送\"和表单的\"提交\"是不同功能，要结合用户当前操作的上下文来选择正确的元素。",
         ].join("\n");
       } catch {
         // 快照失败不阻塞正常流程
