@@ -17,6 +17,23 @@
  */
 import type { AIClient, AIMessage } from "./types.js";
 import { ToolRegistry, type ToolCallResult } from "./tool-registry.js";
+import {
+  DEFAULT_ACTION_RECOVERY_ROUNDS,
+  DEFAULT_MAX_ROUNDS,
+} from "./agent-loop/constants.js";
+import {
+  buildToolCallKey,
+  buildToolTrace,
+  getToolAction,
+  hasToolError,
+  isElementNotFoundResult,
+  readPageSnapshot,
+  readPageUrl,
+  resolveRecoveryWaitMs,
+  sleep,
+  toContentString,
+  type ToolTraceEntry,
+} from "./agent-loop/helpers.js";
 
 // ─── 回调接口 ───
 
@@ -62,7 +79,11 @@ export type AgentLoopResult = {
   messages: AIMessage[];
 };
 
-const DEFAULT_MAX_ROUNDS = 10;
+type PageContextState = {
+  currentUrl?: string;
+  latestSnapshot?: string;
+  needsSnapshotBeforeDom: boolean;
+};
 
 /**
  * 执行 Agent 决策循环（环境无关）。
@@ -93,6 +114,11 @@ export async function executeAgentLoop(
     { role: "user", content: message },
   ];
   const allToolCalls: AgentLoopResult["toolCalls"] = [];
+  const fullToolTrace: ToolTraceEntry[] = [];
+  const actionRecoveryAttempts = new Map<string, number>();
+  const pageContext: PageContextState = {
+    needsSnapshotBeforeDom: false,
+  };
   let finalReply = "";
 
   for (let round = 0; round < maxRounds; round++) {
@@ -135,8 +161,146 @@ export async function executeAgentLoop(
     for (const tc of response.toolCalls) {
       callbacks?.onToolCall?.(tc.name, tc.input);
 
-      const result = await registry.dispatch(tc.name, tc.input);
+      const latestUrl = await readPageUrl(registry);
+      if (latestUrl) {
+        if (!pageContext.currentUrl) {
+          pageContext.currentUrl = latestUrl;
+        } else if (latestUrl !== pageContext.currentUrl) {
+          pageContext.currentUrl = latestUrl;
+          pageContext.needsSnapshotBeforeDom = true;
+        }
+      }
+
+      if (tc.name === "dom" && pageContext.needsSnapshotBeforeDom) {
+        const snapshotText = await readPageSnapshot(registry, 8);
+        pageContext.latestSnapshot = snapshotText;
+        pageContext.needsSnapshotBeforeDom = false;
+
+        const result: ToolCallResult = {
+          content: [
+            `检测到页面 URL 变化：${pageContext.currentUrl ?? "(未知)"}`,
+            "已在执行 DOM 操作前生成最新快照，请基于该快照重新定位目标元素后重试当前工具调用。",
+            "",
+            "本次对话任务完整工具轨迹：",
+            buildToolTrace(fullToolTrace, {
+              round,
+              name: tc.name,
+              input: tc.input,
+              marker: "[URL变化待重定位]",
+            }),
+            "",
+            "最新页面快照：",
+            snapshotText,
+          ].join("\n"),
+          details: {
+            error: true,
+            code: "URL_CHANGED_REQUIRE_NEW_SNAPSHOT",
+            url: pageContext.currentUrl,
+          },
+        };
+
+        allToolCalls.push({ name: tc.name, input: tc.input, result });
+        fullToolTrace.push({
+          round,
+          name: tc.name,
+          input: tc.input,
+          result,
+          marker: "[URL变化待重定位]",
+        });
+        callbacks?.onToolResult?.(tc.name, result);
+        toolResults.push({
+          toolCallId: tc.id,
+          result: toContentString(result.content),
+        });
+        continue;
+      }
+
+      let result = await registry.dispatch(tc.name, tc.input);
+
+      if (tc.name === "dom" && isElementNotFoundResult(result)) {
+        const key = buildToolCallKey(tc.name, tc.input);
+        const attempts = (actionRecoveryAttempts.get(key) ?? 0) + 1;
+        actionRecoveryAttempts.set(key, attempts);
+        const recoveryWaitMs = resolveRecoveryWaitMs(tc.input);
+
+        if (attempts <= DEFAULT_ACTION_RECOVERY_ROUNDS) {
+          await sleep(recoveryWaitMs);
+
+          const snapshotText = await readPageSnapshot(registry, 8);
+          pageContext.latestSnapshot = snapshotText;
+          const originalError = toContentString(result.content);
+          const fullTrace = buildToolTrace(fullToolTrace, {
+            round,
+            name: tc.name,
+            input: tc.input,
+            result,
+            marker: "[当前失败]",
+          });
+
+          result = {
+            content: [
+              originalError,
+              "",
+              `自动恢复 ${attempts}/${DEFAULT_ACTION_RECOVERY_ROUNDS}：等待 ${recoveryWaitMs}ms 后重新获取页面快照。`,
+              "本次对话任务完整工具轨迹（含本次失败）：",
+              fullTrace,
+              "请根据下方最新快照，重新定位本次操作目标元素并再次调用工具。",
+              "",
+              "最新页面快照：",
+              snapshotText,
+            ].join("\n"),
+            details: {
+              error: true,
+              code: "ELEMENT_NOT_FOUND_RECOVERY",
+              recoveryAttempt: attempts,
+              recoveryMaxRounds: DEFAULT_ACTION_RECOVERY_ROUNDS,
+              waitMs: recoveryWaitMs,
+            },
+          };
+        } else {
+          const originalError = toContentString(result.content);
+          const fullTrace = buildToolTrace(fullToolTrace, {
+            round,
+            name: tc.name,
+            input: tc.input,
+            result,
+            marker: "[超过恢复上限]",
+          });
+          result = {
+            content: [
+              originalError,
+              "",
+              `已达到最大自动恢复次数（${DEFAULT_ACTION_RECOVERY_ROUNDS}）。请根据当前页面状态调整操作目标后重试。`,
+              "本次对话任务完整工具轨迹：",
+              fullTrace,
+            ].join("\n"),
+            details: {
+              error: true,
+              code: "ELEMENT_NOT_FOUND_MAX_RECOVERY_REACHED",
+              recoveryAttempt: attempts,
+              recoveryMaxRounds: DEFAULT_ACTION_RECOVERY_ROUNDS,
+              waitMs: recoveryWaitMs,
+            },
+          };
+        }
+      }
+
       allToolCalls.push({ name: tc.name, input: tc.input, result });
+      fullToolTrace.push({ round, name: tc.name, input: tc.input, result });
+
+      if (tc.name === "navigate") {
+        const action = getToolAction(tc.input);
+        if (
+          action === "goto" ||
+          action === "back" ||
+          action === "forward" ||
+          action === "reload"
+        ) {
+          if (!hasToolError(result)) {
+            pageContext.needsSnapshotBeforeDom = true;
+          }
+        }
+      }
 
       callbacks?.onToolResult?.(tc.name, result);
 

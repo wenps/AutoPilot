@@ -17,6 +17,12 @@
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js";
 
+const DEFAULT_WAIT_MS = 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * 通过快照 ref（XPath 路径）解析到 DOM 元素。
  *
@@ -27,7 +33,8 @@ function resolveRef(ref: string): Element | null {
   const segments = ref.split("/").filter(Boolean);
   let current: Element | null = document.documentElement; // <html>
 
-  for (const seg of segments) {
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     if (!current) return null;
 
     // 解析 "tag" 或 "tag[n]"
@@ -37,8 +44,11 @@ function resolveRef(ref: string): Element | null {
     const tag = match[1].toUpperCase();
     const index = match[2] ? parseInt(match[2], 10) : 1; // 默认第 1 个
 
-    // 如果当前元素就是目标标签（如 body 段匹配 document.body）
-    if (current.tagName === tag) continue;
+    // 仅允许“首段即根节点”时命中当前节点（兼容 /html/...）
+    // 其他情况必须向下进入子节点，避免 /div[2]/div 这类连续同标签路径被错误跳过。
+    if (i === 0 && current.tagName === tag) {
+      continue;
+    }
 
     // 在子元素中按标签名过滤并取第 index 个
     const children: Element[] = Array.from(current.children).filter((c) => c.tagName === tag);
@@ -82,6 +92,43 @@ function queryElement(selector: string): Element | string {
   } catch (e) {
     return `选择器语法错误: ${selector}`;
   }
+}
+
+/**
+ * 在给定超时时间内轮询查找元素。
+ * - 返回 Element：找到元素
+ * - 返回 string：选择器语法错误
+ * - 返回 null：超时未找到
+ */
+async function waitForElement(
+  selector: string,
+  timeoutMs: number,
+): Promise<Element | string | null> {
+  const start = Date.now();
+
+  while (Date.now() - start <= timeoutMs) {
+    const elOrError = queryElement(selector);
+    if (typeof elOrError !== "string") return elOrError;
+
+    if (elOrError.startsWith("选择器语法错误")) return elOrError;
+    await sleep(100);
+  }
+
+  return null;
+}
+
+function resolveWaitMs(params: Record<string, unknown>): number {
+  const waitMs = params.waitMs;
+  if (typeof waitMs === "number" && Number.isFinite(waitMs)) {
+    return Math.max(0, Math.floor(waitMs));
+  }
+
+  const waitSeconds = params.waitSeconds;
+  if (typeof waitSeconds === "number" && Number.isFinite(waitSeconds)) {
+    return Math.max(0, Math.floor(waitSeconds * 1000));
+  }
+
+  return DEFAULT_WAIT_MS;
 }
 
 /**
@@ -141,17 +188,65 @@ export function createDomTool(): ToolDefinition {
       className: Type.Optional(
         Type.String({ description: "CSS class name for add_class/remove_class" }),
       ),
+      waitMs: Type.Optional(
+        Type.Number({
+          description:
+            "Optional wait timeout in ms before action (default: 1000). Use 0 to disable waiting.",
+        }),
+      ),
+      waitSeconds: Type.Optional(
+        Type.Number({
+          description:
+            "Optional wait timeout in seconds before action. Used when waitMs is not provided.",
+        }),
+      ),
     }),
 
     execute: async (params): Promise<ToolCallResult> => {
       const action = params.action as string;
       const selector = params.selector as string;
+      const waitMs = resolveWaitMs(params);
 
       if (!selector) return { content: "缺少 selector 参数" };
 
-      const elOrError = queryElement(selector);
-      if (typeof elOrError === "string") return { content: elOrError };
-      const el = elOrError;
+      let el: Element;
+      if (waitMs > 0) {
+        const found = await waitForElement(selector, waitMs);
+
+        if (typeof found === "string") {
+          return {
+            content: found,
+            details: { error: true, code: "INVALID_SELECTOR", action, selector },
+          };
+        }
+
+        if (!found) {
+          return {
+            content: `未找到匹配 "${selector}" 的元素`,
+            details: {
+              error: true,
+              code: "ELEMENT_NOT_FOUND",
+              action,
+              selector,
+              waitMs,
+            },
+          };
+        }
+
+        el = found;
+      } else {
+        const elOrError = queryElement(selector);
+        if (typeof elOrError === "string") {
+          const code = elOrError.startsWith("未找到")
+            ? "ELEMENT_NOT_FOUND"
+            : "INVALID_SELECTOR";
+          return {
+            content: elOrError,
+            details: { error: true, code, action, selector, waitMs },
+          };
+        }
+        el = elOrError;
+      }
 
       try {
         switch (action) {

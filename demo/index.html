@@ -61,6 +61,145 @@
     }
     .settings input[type="password"] { width: 280px; }
 
+    /* ─── 交互沙盒区 ─── */
+    .playground {
+      background: #10101d;
+      border-bottom: 1px solid #2a2a4a;
+      padding: 12px 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .card {
+      background: #17172a;
+      border: 1px solid #2a2a4a;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .hidden {
+      display: none !important;
+    }
+    .card h3 {
+      font-size: 13px;
+      color: #b9bfff;
+      margin-bottom: 10px;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .row label {
+      font-size: 12px;
+      color: #9aa;
+      min-width: 72px;
+    }
+    .row input,
+    .row select,
+    .row textarea {
+      flex: 1;
+      min-width: 140px;
+      background: #0f0f1e;
+      border: 1px solid #333;
+      color: #ddd;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    .row textarea {
+      min-height: 70px;
+      resize: vertical;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .actions button {
+      background: #25254a;
+      color: #ddd;
+      border: 1px solid #3a3a62;
+      border-radius: 6px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .actions button.primary {
+      background: #4a5cff;
+      border-color: #4a5cff;
+      color: #fff;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      max-height: 250px;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      min-width: 560px;
+    }
+    th, td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #25253f;
+      text-align: left;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      background: #1b1b31;
+      color: #b5baff;
+      cursor: pointer;
+      user-select: none;
+    }
+    td .mini {
+      font-size: 11px;
+      color: #8d93c9;
+    }
+
+    .pill {
+      display: inline-block;
+      border: 1px solid #3a3f75;
+      color: #c7cbff;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+    }
+
+    .modal-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal-mask.open { display: flex; }
+    .modal {
+      width: min(520px, 92vw);
+      background: #17172a;
+      border: 1px solid #2f2f52;
+      border-radius: 12px;
+      padding: 14px;
+    }
+    .modal h3 {
+      margin-bottom: 10px;
+      color: #c8ccff;
+      font-size: 14px;
+    }
+    .hint {
+      font-size: 11px;
+      color: #8a8fbf;
+      margin-top: 4px;
+    }
+
     /* ─── 聊天区 ─── */
     #chat {
       flex: 1;
@@ -197,6 +336,83 @@
     <input type="checkbox" id="memory" />
   </div>
 
+  <section class="playground" id="playground">
+    <div class="card hidden" id="employeeFormCard">
+      <h3>📋 动态表单（提交后入表）</h3>
+      <div class="row">
+        <label for="employeeName">姓名</label>
+        <input id="employeeName" placeholder="例如：李雷" />
+      </div>
+      <div class="row">
+        <label for="employeeEmail">邮箱</label>
+        <input id="employeeEmail" type="email" placeholder="name@company.com" />
+      </div>
+      <div class="row">
+        <label for="employeeRole">角色</label>
+        <select id="employeeRole">
+          <option value="developer">开发</option>
+          <option value="designer">设计</option>
+          <option value="manager">经理</option>
+        </select>
+      </div>
+      <div class="row" id="budgetRow" style="display:none;">
+        <label for="employeeBudget">预算</label>
+        <input id="employeeBudget" type="number" min="0" step="1000" placeholder="仅经理必填" />
+      </div>
+      <div class="row">
+        <label for="employeeStatus">状态</label>
+        <select id="employeeStatus">
+          <option value="active">在职</option>
+          <option value="onleave">休假</option>
+          <option value="inactive">离职</option>
+        </select>
+      </div>
+      <div class="actions">
+        <button class="primary" id="submitEmployee">提交员工</button>
+        <button id="resetEmployee">重置表单</button>
+        <span class="hint" id="formHint">提示：角色选“经理”后预算字段会出现。</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🧩 弹窗交互（复杂输入）</h3>
+      <div class="actions">
+        <button class="primary" id="openModal">打开任务弹窗</button>
+      </div>
+      <p class="hint" id="modalResult">尚未提交弹窗内容</p>
+    </div>
+
+    <div class="card hidden" id="employeeTableCard" style="grid-column: 1 / -1;">
+      <h3>📊 员工表格（筛选 + 排序 + 删除）</h3>
+      <div class="row">
+        <label for="filterKeyword">关键词</label>
+        <input id="filterKeyword" placeholder="按姓名/邮箱筛选" />
+        <label for="filterStatus" style="min-width:52px;">状态</label>
+        <select id="filterStatus" style="max-width:140px;">
+          <option value="all">全部</option>
+          <option value="active">在职</option>
+          <option value="onleave">休假</option>
+          <option value="inactive">离职</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="name">姓名</th>
+              <th>邮箱</th>
+              <th>角色</th>
+              <th data-sort="status">状态</th>
+              <th data-sort="createdAt">创建时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="employeeTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <div id="chat"></div>
 
   <div class="test-panel">
@@ -206,12 +422,46 @@
     <button onclick="sendQuick('点击页面上的第一个按钮')">👆 点击按钮</button>
     <button onclick="sendQuick('获取页面上所有链接的文本')">🔗 所有链接</button>
     <button onclick="sendQuick('把页面滚动到底部')">⬇️ 滚动底部</button>
-    <button onclick="sendQuick(`执行 document.querySelectorAll(\"*\").length 看看有多少DOM节点`)">📊 DOM计数</button>    
+    <button onclick="sendQuick('执行 document.querySelectorAll(\'*\').length 看看有多少DOM节点')">📊 DOM计数</button>
     <button onclick="clearHistory()">🗑️ 清空记忆</button>  </div>
 
   <div class="input-area">
     <input type="text" id="input" placeholder="输入指令，让 AI 操作当前页面..." />
     <button id="send">发送</button>
+  </div>
+
+  <div class="modal-mask" id="taskModalMask" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="taskModalTitle">
+      <h3 id="taskModalTitle">新建任务弹窗</h3>
+      <div class="row">
+        <label for="taskTitle">任务名</label>
+        <input id="taskTitle" placeholder="例如：发布 v0.3.0" />
+      </div>
+      <div class="row">
+        <label for="taskPriority">优先级</label>
+        <select id="taskPriority">
+          <option value="P0">P0</option>
+          <option value="P1">P1</option>
+          <option value="P2">P2</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="taskDueDate">截止日期</label>
+        <input id="taskDueDate" type="date" />
+      </div>
+      <div class="row">
+        <label for="taskMembers">参与人</label>
+        <input id="taskMembers" placeholder="逗号分隔，例如：A,B,C" />
+      </div>
+      <div class="row">
+        <label for="taskDesc">描述</label>
+        <textarea id="taskDesc" placeholder="输入任务详情"></textarea>
+      </div>
+      <div class="actions">
+        <button class="primary" id="confirmTask">确认提交</button>
+        <button id="cancelTask">取消</button>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="./main.ts"></script>
