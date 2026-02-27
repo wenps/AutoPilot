@@ -15,85 +15,87 @@ import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js
 /** 默认超时时间（毫秒） */
 const DEFAULT_TIMEOUT = 10_000;
 
+type SelectorState = "attached" | "visible" | "hidden" | "detached";
+
 /**
- * 通过 MutationObserver 等待元素出现。
- * 先检查元素是否已存在，不存在则监听 DOM 变化直到出现或超时。
+ * Playwright 风格可见性判定（近似）。
  */
-function waitForSelector(selector: string, timeoutMs: number): Promise<Element> {
-  return new Promise((resolve, reject) => {
-    // 先检查是否已存在
-    const existing = document.querySelector(selector);
-    if (existing) {
-      resolve(existing);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      observer.disconnect();
-      reject(new Error(`等待 "${selector}" 超时 (${timeoutMs}ms)`));
-    }, timeoutMs);
-
-    const observer = new MutationObserver(() => {
-      const el = document.querySelector(selector);
-      if (el) {
-        clearTimeout(timer);
-        observer.disconnect();
-        resolve(el);
-      }
-    });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-    });
-  });
+function isVisible(el: Element): boolean {
+  if (!(el instanceof HTMLElement || el instanceof SVGElement)) return false;
+  if (!el.isConnected) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  if (style.opacity === "0") return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
 }
 
 /**
- * 等待元素消失或变为不可见。
+ * 读取 selector 当前状态。
  */
-function waitForHidden(selector: string, timeoutMs: number): Promise<void> {
+function evaluateSelectorState(selector: string, state: SelectorState): { matched: boolean; element?: Element } {
+  const el = document.querySelector(selector) ?? undefined;
+  switch (state) {
+    case "attached":
+      return { matched: Boolean(el), element: el };
+    case "visible":
+      return { matched: Boolean(el && isVisible(el)), element: el };
+    case "hidden":
+      return { matched: !el || !isVisible(el), element: el };
+    case "detached":
+      return { matched: !el, element: el };
+    default:
+      return { matched: false };
+  }
+}
+
+/**
+ * 等待 selector 达到指定状态（近似 Playwright state 语义）。
+ */
+function waitForSelectorState(
+  selector: string,
+  state: SelectorState,
+  timeoutMs: number,
+): Promise<{ element?: Element }> {
   return new Promise((resolve, reject) => {
-    // 先检查是否已不存在或隐藏
-    const existing = document.querySelector(selector);
-    if (!existing) {
-      resolve();
-      return;
-    }
-    const style = window.getComputedStyle(existing);
-    if (style.display === "none" || style.visibility === "hidden") {
-      resolve();
-      return;
-    }
+    let finished = false;
 
-    const timer = setTimeout(() => {
+    const finish = (handler: () => void): void => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      clearInterval(interval);
       observer.disconnect();
-      reject(new Error(`等待 "${selector}" 消失超时 (${timeoutMs}ms)`));
-    }, timeoutMs);
+      handler();
+    };
 
-    const observer = new MutationObserver(() => {
-      const el = document.querySelector(selector);
-      if (!el) {
-        clearTimeout(timer);
-        observer.disconnect();
-        resolve();
+    const check = (): void => {
+      let result: { matched: boolean; element?: Element };
+      try {
+        result = evaluateSelectorState(selector, state);
+      } catch {
+        finish(() => reject(new Error(`选择器语法错误: ${selector}`)));
         return;
       }
-      const s = window.getComputedStyle(el);
-      if (s.display === "none" || s.visibility === "hidden") {
-        clearTimeout(timer);
-        observer.disconnect();
-        resolve();
+      if (result.matched) {
+        finish(() => resolve({ element: result.element }));
       }
-    });
+    };
 
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`等待 "${selector}" 达到状态 "${state}" 超时 (${timeoutMs}ms)`)));
+    }, timeoutMs);
+
+    const interval = setInterval(check, 80);
+    const observer = new MutationObserver(check);
     observer.observe(document.body, {
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["style", "class", "hidden"],
+      characterData: true,
     });
+
+    check();
   });
 }
 
@@ -145,6 +147,9 @@ export function createWaitTool(): ToolDefinition {
       selector: Type.Optional(
         Type.String({ description: "CSS selector for wait_for_selector/wait_for_hidden" }),
       ),
+      state: Type.Optional(
+        Type.String({ description: "Selector state for wait_for_selector: attached | visible | hidden | detached (default: attached)" }),
+      ),
       text: Type.Optional(
         Type.String({ description: "Text to wait for in wait_for_text" }),
       ),
@@ -162,15 +167,23 @@ export function createWaitTool(): ToolDefinition {
           case "wait_for_selector": {
             const selector = params.selector as string;
             if (!selector) return { content: "缺少 selector 参数" };
-            await waitForSelector(selector, timeoutMs);
-            return { content: `元素 "${selector}" 已出现` };
+            const state = (params.state as SelectorState | undefined) ?? "attached";
+            if (!["attached", "visible", "hidden", "detached"].includes(state)) {
+              return { content: `无效 state: ${state}` };
+            }
+            const result = await waitForSelectorState(selector, state, timeoutMs);
+            if (state === "attached" || state === "visible") {
+              const tag = result.element?.tagName?.toLowerCase();
+              return { content: `元素 "${selector}" 已达到状态 "${state}"${tag ? ` (${tag})` : ""}` };
+            }
+            return { content: `元素 "${selector}" 已达到状态 "${state}"` };
           }
 
           case "wait_for_hidden": {
             const selector = params.selector as string;
             if (!selector) return { content: "缺少 selector 参数" };
-            await waitForHidden(selector, timeoutMs);
-            return { content: `元素 "${selector}" 已消失` };
+            await waitForSelectorState(selector, "hidden", timeoutMs);
+            return { content: `元素 "${selector}" 已隐藏或消失` };
           }
 
           case "wait_for_text": {

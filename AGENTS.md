@@ -90,10 +90,10 @@ src/
 
 每轮循环都做同一件事：
 1. 读取最新页面快照
-2. 告诉 AI：原始目标 + 已完成步骤 + 当前快照
+2. 告诉 AI：当前剩余任务 + 上一轮已执行任务 + 当前快照
 3. 执行 AI 返回的工具调用
 4. 刷新快照
-5. 重复，直到 AI 返回“无工具调用的总结文本”
+5. 重复，直到 remaining 收敛（`REMAINING: DONE`）或触发停机条件
 
 补充（渐进式协议）：
 - 每轮消息必须显式包含：
@@ -103,6 +103,12 @@ src/
   - `REMAINING: <text>`（仍有剩余任务）
   - `REMAINING: DONE`（当前文本任务已消费完）
 
+补充（当前实现）：
+- Round 0 使用原始任务作为起点；Round 1+ 不再重复注入原始 userMessage，避免“回头重做”。
+- 模型在 `tool_calls` 轮可能返回空 `content`，不可视为完成。
+- `REMAINING` 缺失且本轮有执行动作时：按线性任务剔除做启发式推进。
+- `REMAINING` 缺失且本轮无执行进展时：保持 remaining 不推进。
+
 ### 4.2 不跨 DOM 变化链式执行
 
 原则：
@@ -111,12 +117,37 @@ src/
 
 目标：减少“猜测未来 DOM”导致的失败与空转。
 
+补充（当前实现）：
+- 对可能引发 DOM 结构变化的动作（如 `dom.click` / `dom.press`、`navigate.*`、`evaluate`）执行后可强制断轮，等待下一轮新快照。
+
 ### 4.3 快照优先级
 
 快照是当前可执行范围的唯一事实来源：
 - `messages.ts` 持续注入最新快照
 - `snapshot.ts` 负责包裹、去重、剥离旧快照
 - `recovery.ts` 负责在失败后触发重新快照
+
+补充（当前实现）：
+- chat 发起时由前端先生成首轮快照并注入 `initialSnapshot`。
+- 默认拦截 `page_info.*`，避免模型把“看页面”当主流程。
+
+### 4.4 找不到元素重试对话流（新增）
+
+当工具执行返回“元素未找到”时：
+1. 聚合失败工具（name/input）与失败原因
+2. 将失败工具集合 + 最新快照 + 当前任务一起发给 AI
+3. 在对话上下文中标注当前尝试次数（attempt x/y）
+4. 若仍未命中，默认等待 2 秒后刷新快照再重试
+5. 超过最大尝试次数后退出重试流，交由剩余任务协议收敛
+
+### 4.5 工具语义对齐（Playwright 风格，新增）
+
+当前实现在 Web 工具层对齐了常见 Playwright 语义：
+- `dom.click`：补齐 `pointerdown/mousedown/pointerup/mouseup/click` 事件链，减少站点事件漏触发。
+- `dom.select_option`：支持 `value/label/index` 多策略选择；结果中显式返回 `value + label`。
+- `dom.fill`：限制不适用于 `checkbox/radio/file/button/submit/reset`，避免错误动作。
+- `wait.wait_for_selector`：支持 `state=attached|visible|hidden|detached`（默认 `attached`）。
+- 快照增强运行态：`select val`、`option selected`、`checked`、`disabled`、`readonly` 可见。
 
 ## 5. 模块职责细化
 
@@ -129,7 +160,8 @@ src/
 
 - `messages.ts`
   - 紧凑消息构建
-  - 将“原始任务 + done steps + latest snapshot”压缩成固定语义结构
+  - Round 0 注入“原始任务 + 快照”
+  - Round 1+ 注入“remaining + done steps + previous executed + previous model output(normalized) + latest snapshot”
 
 - `snapshot.ts`
   - 读取页面 URL/快照
@@ -158,6 +190,9 @@ src/
 
 - `index.ts`：WebAgent 对外 API，负责配置、记忆、autoSnapshot、callbacks
 - `tools/*.ts`：工具实现主文件（DOM/导航/信息/等待/执行）
+- `tools/dom-tool.ts`：对齐 Playwright 常见交互语义（事件链、select_option 多策略、fill 目标约束）
+- `tools/wait-tool.ts`：支持 selector state 等待语义（attached/visible/hidden/detached）
+- `tools/page-info-tool.ts`：快照输出运行态字段（selected/checked/disabled/readonly）
 - `dom-tool.ts` / `navigate-tool.ts` / `page-info-tool.ts` / `wait-tool.ts` / `evaluate-tool.ts`：兼容转发层，避免外部导入路径断裂
 - `ref-store.ts`：`#hashID -> Element` 映射
 - `messaging.ts`：Extension 场景消息桥
@@ -170,13 +205,17 @@ src/
 - 避免 AI 无意义调用 page_info 导致 completion 浪费
 
 2. 元素恢复机制
-- 元素找不到时自动等待 + 重拍快照 + 引导重定位
+- 元素找不到时进入重试对话流（失败工具聚合 + 快照 + 尝试次数）
 
 3. 导航上下文更新
-- URL 变化时更新 page context，避免旧映射污染
+- 导航后刷新快照，避免旧映射污染
 
 4. 空转检测
 - 连续只读/无实质推进时终止循环，防止无限迭代
+
+6. 协议修复回合
+- 当“remaining 未完成 + 无工具调用”出现时，不直接结束
+- 下一轮注入 protocol violation 提示，要求“要么工具调用推进，要么严格 `REMAINING: DONE`”
 
 5. 重复批次防自转
 - 若连续两轮返回完全相同的任务批次且上一轮无错误，直接终止本次请求
@@ -222,9 +261,12 @@ pnpm build
 **先保证“快照-决策-执行-反馈”闭环正确，再谈优化。**
 
 补充：对“渐进式任务消费”相关改动，必须同时维护三处一致性：
-- `messages.ts` 的输入语义（remaining + previous tasks）
+- `messages.ts` 的输入语义（remaining + previous tasks + previous model output）
 - `index.ts` 的停机判定（无工具调用/重复批次/错误回退）
 - README/AGENTS 的机制描述
+
+并新增一致性要求：
+- 找不到元素重试流（attempt 标注、等待策略、最大重试）在 `index.ts` 与 README/AGENTS 中必须一致。
 
 ## 11. 注释与提示词语言规范
 

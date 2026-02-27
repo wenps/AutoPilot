@@ -233,6 +233,14 @@ export function generateSnapshot(
       if (el.hasAttribute(attr)) attrs.push(attr);
     }
 
+    // 4.1 运行时布尔状态（property 级别），避免仅靠 attribute 导致状态丢失
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || el instanceof HTMLButtonElement) {
+      if (el.disabled && !attrs.includes("disabled")) attrs.push("disabled");
+    }
+    if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && el.readOnly) {
+      if (!attrs.includes("readonly")) attrs.push("readonly");
+    }
+
     // 5. 事件绑定 — 只标记有 onclick（最重要的交互信号）
     if (el.hasAttribute("onclick")) attrs.push("onclick");
 
@@ -247,6 +255,19 @@ export function generateSnapshot(
       if (attrVal !== currentVal) {
         attrs.push(`val="${currentVal}"`);
       }
+    }
+
+    // 7.1 对于 checkbox/radio，补充运行时 checked 状态（property 级别）
+    if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio") && el.checked) {
+      if (!attrs.includes("checked")) attrs.push("checked");
+    }
+
+    // 8. 对于 select，补充当前选中 value；对于 option，按运行时 selected 状态输出
+    if (el instanceof HTMLSelectElement && el.value) {
+      attrs.push(`val="${el.value.slice(0, 40)}"`);
+    }
+    if (el instanceof HTMLOptionElement && el.selected) {
+      if (!attrs.includes("selected")) attrs.push("selected");
     }
 
     // 获取直接文本（不含子元素文本）

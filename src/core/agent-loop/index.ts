@@ -17,9 +17,18 @@
  *      ▼
  *   下一轮或停机
  */
-import { DEFAULT_MAX_ROUNDS } from "./constants.js";
-import { getToolAction, toContentString } from "./helpers.js";
-import { readPageSnapshot, readPageUrl, stripSnapshotFromPrompt } from "./snapshot.js";
+import {
+  DEFAULT_MAX_ROUNDS,
+  DEFAULT_NOT_FOUND_RETRY_ROUNDS,
+  DEFAULT_NOT_FOUND_RETRY_WAIT_MS,
+} from "./constants.js";
+import {
+  getToolAction,
+  isElementNotFoundResult,
+  sleep,
+  toContentString,
+} from "./helpers.js";
+import { readPageSnapshot, stripSnapshotFromPrompt } from "./snapshot.js";
 import { buildCompactMessages } from "./messages.js";
 import {
   checkRedundantSnapshot,
@@ -51,6 +60,7 @@ export async function executeAgentLoop(
     registry,
     systemPrompt,
     message,
+    initialSnapshot,
     history,
     dryRun = false,
     maxRounds = DEFAULT_MAX_ROUNDS,
@@ -62,7 +72,9 @@ export async function executeAgentLoop(
   const allToolCalls: AgentLoopResult["toolCalls"] = [];
   const fullToolTrace: ToolTraceEntry[] = [];
   const actionRecoveryAttempts = new Map<string, number>();
-  const pageContext: PageContextState = {};
+  const pageContext: PageContextState = {
+    latestSnapshot: initialSnapshot,
+  };
 
   // 最终输出（中）/ Final output state (EN).
   let finalReply = "";
@@ -82,12 +94,28 @@ export async function executeAgentLoop(
   // lastRoundHadError: 如果上一轮有错误，不触发“重复批次即停机”，避免误停。
   let remainingInstruction = message.trim();
   let previousRoundTasks: string[] = [];
+  let previousRoundPlannedTasks: string[] = [];
+  let previousRoundModelOutput = "";
   let lastPlannedBatchKey = "";
   let consecutiveSamePlannedBatch = 0;
   let lastRoundHadError = false;
+  let protocolViolationHint: string | undefined;
   // 恢复与拦截统计（中）/ Recovery/interception counters (EN).
   let recoveryCount = 0;
   let redundantInterceptCount = 0;
+
+  type MissingToolTask = {
+    name: string;
+    input: unknown;
+    reason: string;
+  };
+
+  let pendingNotFoundRetry:
+    | {
+      attempt: number;
+      tasks: MissingToolTask[];
+    }
+    | undefined;
 
   // 快照体积统计（中）/ Snapshot size metrics (EN).
   let snapshotReadCount = 0;
@@ -117,6 +145,10 @@ export async function executeAgentLoop(
     pageContext.latestSnapshot = await readPageSnapshot(registry);
     recordSnapshotStats(pageContext.latestSnapshot);
   };
+
+  if (pageContext.latestSnapshot) {
+    recordSnapshotStats(pageContext.latestSnapshot);
+  }
 
   /**
    * 追加工具轨迹（中）/ Append tool trace entry (EN).
@@ -149,6 +181,60 @@ export async function executeAgentLoop(
     });
 
   /**
+   * 规范化模型文本输出（中）/ Normalize model text for next-round input (EN).
+   *
+   * 优先保留 REMAINING 行；否则截断首段文本，避免长篇规划污染下一轮输入。
+   * Prefer REMAINING line; otherwise keep a short excerpt to avoid long planning spillover.
+   */
+  const normalizeModelOutput = (text: string | undefined): string => {
+    if (!text) return "";
+    const trimmed = text.trim();
+    if (!trimmed) return "";
+    const remainingMatch = trimmed.match(/REMAINING\s*:\s*([\s\S]*)$/i);
+    if (remainingMatch) {
+      return `REMAINING: ${remainingMatch[1].trim()}`;
+    }
+    const firstBlock = trimmed.split(/\n\s*\n/)[0]?.trim() ?? trimmed;
+    return firstBlock.slice(0, 220);
+  };
+
+  /**
+   * 判定动作是否会触发 DOM 结构变化（中）/ Whether action may cause DOM-shape change (EN).
+   *
+   * 触发后应强制断轮，等待下一轮新快照继续。
+   * Force round break after such action and continue with refreshed snapshot next round.
+   */
+  const shouldForceRoundBreak = (toolName: string, toolInput: unknown): boolean => {
+    const action = getToolAction(toolInput);
+    if (toolName === "navigate") {
+      return action === "goto" || action === "back" || action === "forward" || action === "reload";
+    }
+    if (toolName === "dom") {
+      return action === "click" || action === "press";
+    }
+    if (toolName === "evaluate") {
+      return true;
+    }
+    return false;
+  };
+
+  /**
+   * 将“找不到元素”的失败任务整理成可重试清单（中）/ Build retry task list for not-found failures (EN).
+   */
+  const collectMissingTask = (
+    name: string,
+    input: unknown,
+    result: AgentLoopResult["toolCalls"][number]["result"],
+  ): MissingToolTask | null => {
+    if (!isElementNotFoundResult(result)) return null;
+    return {
+      name,
+      input,
+      reason: toContentString(result.content).slice(0, 240),
+    };
+  };
+
+  /**
    * 解析 REMAINING 协议（中）/ Parse REMAINING protocol from model text (EN).
    *
    * 支持：
@@ -162,6 +248,53 @@ export async function executeAgentLoop(
     if (!match) return null;
     const value = match[1].trim();
     return /^done$/i.test(value) ? "" : value;
+  };
+
+  /**
+   * 推进下一轮描述（中）/ Derive next-round instruction from model text (EN).
+   *
+    * 优先 REMAINING 协议；若未提供，则保持当前 remaining 不变。
+    * Priority: REMAINING protocol first; otherwise keep current remaining instruction unchanged.
+   */
+  const deriveNextInstruction = (
+    text: string | undefined,
+    currentInstruction: string,
+  ): { nextInstruction: string; hasRemainingProtocol: boolean } => {
+    const parsed = parseRemainingInstruction(text);
+    if (parsed !== null) {
+      return { nextInstruction: parsed, hasRemainingProtocol: true };
+    }
+    // 协议缺失时按规则回退：保持当前剩余任务不变。
+    // Fallback when protocol is missing: keep current remaining instruction unchanged.
+    return { nextInstruction: currentInstruction, hasRemainingProtocol: false };
+  };
+
+  /**
+   * 启发式任务剔除（中）/ Heuristic remaining reduction for linear instructions (EN).
+   *
+   * 在 REMAINING 缺失但本轮有执行动作时，按“线性片段”剔除已执行步数，避免下一轮继续携带整段原任务。
+   * When REMAINING is missing but actions were executed, drop executed step count from a linearized instruction.
+   */
+  const reduceRemainingHeuristically = (
+    currentInstruction: string,
+    executedCount: number,
+  ): string => {
+    if (!currentInstruction.trim() || executedCount <= 0) return currentInstruction;
+    const normalized = currentInstruction
+      .replace(/\s+/g, " ")
+      .replace(/(->|=>|→)/g, " 然后 ")
+      .replace(/[，,。；;]/g, " 然后 ");
+
+    const parts = normalized
+      .split(/\s*(?:然后|再|并且|并|接着|随后|之后)\s*/g)
+      .map(part => part.trim())
+      .filter(Boolean);
+
+    if (parts.length <= 1) return currentInstruction;
+
+    const nextParts = parts.slice(Math.min(executedCount, parts.length));
+    if (nextParts.length === 0) return "";
+    return nextParts.join(" -> ");
   };
 
   // 主循环（中）/ Main round loop (EN).
@@ -187,7 +320,26 @@ export async function executeAgentLoop(
       history,
       remainingInstruction,
       previousRoundTasks,
+      previousRoundModelOutput,
+      previousRoundPlannedTasks,
+      protocolViolationHint,
     );
+
+    if (pendingNotFoundRetry && pendingNotFoundRetry.tasks.length > 0) {
+      chatMessages.push({
+        role: "user",
+        content: [
+          "## Not-found retry context",
+          `Retry attempt: ${pendingNotFoundRetry.attempt}/${DEFAULT_NOT_FOUND_RETRY_ROUNDS}`,
+          "These tool targets were not found in previous execution:",
+          ...pendingNotFoundRetry.tasks.map((task, i) =>
+            `${i + 1}. ${task.name}(${JSON.stringify(task.input)}) -> ${task.reason}`,
+          ),
+          "Only retry unresolved targets that are now visible in the latest snapshot.",
+          "If still not found, return no tool calls and include REMAINING with the unresolved part.",
+        ].join("\n"),
+      });
+    }
 
     // ═══ 阶段 3：调用 AI ═══
     const response = await client.chat({
@@ -200,19 +352,64 @@ export async function executeAgentLoop(
     inputTokens += response.usage?.inputTokens ?? 0;
     outputTokens += response.usage?.outputTokens ?? 0;
 
-    // 渐进式协议：如果模型返回了 REMAINING，就覆盖下一轮要消费的文本。
-    // Progressive protocol: when model returns REMAINING, update next-round instruction.
-    const parsedRemainingInstruction = parseRemainingInstruction(response.text);
-    if (parsedRemainingInstruction !== null) {
-      remainingInstruction = parsedRemainingInstruction;
-    }
+    // 先解析协议，最终推进在本轮执行后统一决定。
+    // Parse protocol first; final remaining update is decided after execution.
+    const parsedInstructionState = deriveNextInstruction(response.text, remainingInstruction);
 
-    // 没有工具调用 → 任务完成，拿到最终回复
+    // 没有工具调用：若处于找不到重试流程，先等待再重试；否则正常结束
     if (!response.toolCalls || response.toolCalls.length === 0) {
+      if (pendingNotFoundRetry) {
+        const unresolvedHint = response.text?.toLowerCase() ?? "";
+        const stillUnresolved =
+          unresolvedHint.includes("找不到") ||
+          unresolvedHint.includes("未找到") ||
+          unresolvedHint.includes("not found") ||
+          unresolvedHint.includes("cannot find") ||
+          unresolvedHint.includes("unable to locate");
+
+        if (stillUnresolved && pendingNotFoundRetry.attempt < DEFAULT_NOT_FOUND_RETRY_ROUNDS) {
+          pendingNotFoundRetry = {
+            ...pendingNotFoundRetry,
+            attempt: pendingNotFoundRetry.attempt + 1,
+          };
+          callbacks?.onText?.(
+            `未命中目标，准备第 ${pendingNotFoundRetry.attempt} 次重试（等待 ${DEFAULT_NOT_FOUND_RETRY_WAIT_MS}ms）...`,
+          );
+          await sleep(DEFAULT_NOT_FOUND_RETRY_WAIT_MS);
+          await refreshSnapshot();
+          continue;
+        }
+        pendingNotFoundRetry = undefined;
+      }
+
+      if (parsedInstructionState.hasRemainingProtocol) {
+        remainingInstruction = parsedInstructionState.nextInstruction;
+      }
+
+      const unresolvedRemaining = remainingInstruction.trim().length > 0;
+      if (unresolvedRemaining && round < maxRounds - 1) {
+        protocolViolationHint = [
+          "Protocol violation in previous round:",
+          "- Remaining task is not DONE, but no tool calls were returned.",
+          "This round MUST do one of:",
+          "1) Return actionable tool calls for visible targets; or",
+          "2) If truly complete, return a short summary and EXACTLY `REMAINING: DONE`.",
+          "Do NOT output planning/explaining text.",
+        ].join("\n");
+        lastRoundHadError = true;
+        await refreshSnapshot();
+        continue;
+      }
+
       finalReply = response.text ?? "";
       if (finalReply) callbacks?.onText?.(finalReply);
       break;
     }
+
+    protocolViolationHint = undefined;
+    const plannedTasksCurrentRound = buildTaskArray(
+      response.toolCalls.map(tc => ({ name: tc.name, input: tc.input })),
+    );
 
     const plannedBatchKey = JSON.stringify(
       response.toolCalls.map(tc => ({ name: tc.name, input: tc.input })),
@@ -254,22 +451,12 @@ export async function executeAgentLoop(
 
     // ═══ 阶段 4：执行工具调用（带保护机制）═══
 
-    // 轮次开头检查一次 URL
-    const latestUrl = await readPageUrl(registry);
-    if (latestUrl) {
-      if (!pageContext.currentUrl) {
-        pageContext.currentUrl = latestUrl;
-      } else if (latestUrl !== pageContext.currentUrl) {
-        pageContext.currentUrl = latestUrl;
-        callbacks?.onBeforeRecoverySnapshot?.(latestUrl);
-        await refreshSnapshot();
-      }
-    }
-
     // 批量执行所有工具调用
     // roundHasError 用于控制“重复批次停机”：上一轮有错误时，不应武断终止。
     // roundHasError guards anti-spin stop: do not hard-stop if previous round had errors.
     let roundHasError = false;
+    const executedTaskCalls: Array<{ name: string; input: unknown }> = [];
+    const roundMissingTasks: MissingToolTask[] = [];
     for (const tc of response.toolCalls) {
 
       // 保护 1：冗余快照拦截
@@ -310,6 +497,13 @@ export async function executeAgentLoop(
       }
 
       appendToolTrace(round, tc.name, tc.input, result);
+      executedTaskCalls.push({ name: tc.name, input: tc.input });
+
+      const missingTask = collectMissingTask(tc.name, tc.input, result);
+      if (missingTask) {
+        roundMissingTasks.push(missingTask);
+      }
+
       if (result.details && typeof result.details === "object") {
         roundHasError = roundHasError || Boolean((result.details as { error?: unknown }).error);
       }
@@ -326,14 +520,44 @@ export async function executeAgentLoop(
       );
 
       callbacks?.onToolResult?.(tc.name, result);
+
+      if (shouldForceRoundBreak(tc.name, tc.input)) {
+        break;
+      }
     }
+
+    if (roundMissingTasks.length > 0) {
+      pendingNotFoundRetry = {
+        attempt: 1,
+        tasks: roundMissingTasks,
+      };
+    } else {
+      pendingNotFoundRetry = undefined;
+    }
+
     // 将本轮执行状态传给下一轮上下文。
     // Carry current execution state into next round context.
+    if (parsedInstructionState.hasRemainingProtocol) {
+      remainingInstruction = parsedInstructionState.nextInstruction;
+    } else {
+      const nextByHeuristic = reduceRemainingHeuristically(remainingInstruction, executedTaskCalls.length);
+      if (nextByHeuristic !== remainingInstruction) {
+        remainingInstruction = nextByHeuristic;
+      } else {
+        roundHasError = true;
+      }
+    }
+
+    previousRoundModelOutput = parsedInstructionState.hasRemainingProtocol
+      ? normalizeModelOutput(response.text)
+      : `REMAINING: ${remainingInstruction || "DONE"}`;
+
     lastRoundHadError = roundHasError;
-    previousRoundTasks = buildTaskArray(response.toolCalls);
+    previousRoundTasks = buildTaskArray(executedTaskCalls);
+    previousRoundPlannedTasks = plannedTasksCurrentRound;
 
     // 保护 5：空转检测
-    const toolCallNames = response.toolCalls.map(tc => tc.name);
+    const toolCallNames = executedTaskCalls.map(tc => tc.name);
     const idleResult = detectIdleLoop(toolCallNames, consecutiveReadOnlyRounds);
     if (idleResult === -1) {
       finalReply = response.text || "任务已完成。";

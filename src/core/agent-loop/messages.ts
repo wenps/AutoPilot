@@ -127,6 +127,9 @@ export function buildCompactMessages(
   history?: AIMessage[],
   remainingInstruction?: string,
   previousRoundTasks?: string[],
+  previousRoundModelOutput?: string,
+  previousRoundPlannedTasks?: string[],
+  protocolViolationHint?: string,
 ): AIMessage[] {
   const messages: AIMessage[] = history ? [...history] : [];
   const allowAgentUiInteraction = isExplicitAgentUiRequest(userMessage);
@@ -155,25 +158,29 @@ export function buildCompactMessages(
       parts.push(
         "",
         "## Current page snapshot",
+        "Apply task-reduction model directly from this snapshot. Do NOT restate the task.",
         "Use hash IDs (e.g. #a1b2c) from the snapshot as selector params.",
-        "Do NOT call page_info — the snapshot below is your only source of truth.",
-        "For dropdown/select fields, use dom with action=select_option (or fill on a select). Do NOT rely on click-only selection.",
+        "Do NOT call page_info (get_url/get_title/query_all/snapshot).",
+        "Batch independent visible actions in one round.",
+        "If action changes DOM (open modal/navigate), stop that batch and continue next round.",
+        "For dropdown/select fields, use dom with action=select_option (or fill on a select).",
         allowAgentUiInteraction
           ? "User explicitly asked to operate AutoPilot UI. You may interact with chat input/send/dock only as requested."
           : "Do NOT interact with any AI chat UI elements (chat input, send button, dock). Only operate on the actual page content.",
+        "Output one line: REMAINING: <new remaining task after this round> or REMAINING: DONE",
         wrapSnapshot(latestSnapshot),
       );
+    }
+    if (protocolViolationHint) {
+      parts.push("", protocolViolationHint);
     }
     messages.push({ role: "user", content: parts.join("\n") });
     return messages;
   }
 
-  // ─── Round 1+：原始任务 + 已完成步骤 + 执行上下文与快照 ───
+  // ─── Round 1+：已完成步骤 + 执行上下文与快照（不再重复原始 userMessage） ───
 
-  // 第 1 条：用户原始消息始终独立保留（AI 的终极目标）
-  messages.push({ role: "user", content: userMessage });
-
-  // 第 2 条：已完成步骤摘要（从 fullToolTrace 重建）
+  // 第 1 条：已完成步骤摘要（从 fullToolTrace 重建）
   const traceParts: string[] = [];
   for (let i = 0; i < trace.length; i++) {
     const entry = trace[i];
@@ -190,7 +197,7 @@ export function buildCompactMessages(
     content: `Done steps (do NOT repeat):\n${traceParts.join("\n")}`,
   });
 
-  // 第 3 条：执行上下文 + 最新快照
+  // 第 2 条：执行上下文 + 最新快照
   const hasErrors = trace.some(e => hasToolError(e.result));
   const contextParts: string[] = [
     // 中文释义：Round 1+ 执行上下文
@@ -199,16 +206,18 @@ export function buildCompactMessages(
     // - Completed steps: 已完成步骤不重复
     // - Snapshot constraints: 只基于最新快照执行；不跨 DOM 变化链式操作
     "## Execution context",
-    "Master goal:",
-    userMessage,
-    "",
     "Current remaining instruction:",
     activeInstruction,
     "",
-    "Completed steps are listed above. Look at the snapshot below and execute all remaining sub-tasks whose targets are currently visible.",
-    "Do NOT act on elements that don't exist in this snapshot yet (e.g. modal content before opening the modal).",
-    "Do NOT call page_info — the snapshot is already provided below.",
-    "For dropdown/select fields, use dom with action=select_option (or fill on a select). Do NOT rely on click-only selection.",
+    "Task-reduction model:",
+    "Input: current remaining instruction + previous round executed actions + this-round actions.",
+    "Output: new remaining instruction after removing this-round actions.",
+    "Start from visible page state directly. Do NOT restate task. Do NOT output planning text.",
+    "Execute all independent visible sub-tasks in one round.",
+    "Do NOT act on elements not present in this snapshot yet.",
+    "If action changes DOM (open modal/navigate), stop after that batch and continue next round.",
+    "Do NOT call page_info (get_url/get_title/query_all/snapshot).",
+    "For dropdown/select fields, use dom with action=select_option (or fill on a select).",
     allowAgentUiInteraction
       ? "User explicitly asked to operate AutoPilot UI. You may interact with chat input/send/dock only as requested."
       : "Do NOT interact with any AI chat UI elements (chat input, send button, dock). Only operate on the actual page content.",
@@ -234,14 +243,30 @@ export function buildCompactMessages(
     );
   }
 
+  if (previousRoundPlannedTasks && previousRoundPlannedTasks.length > 0) {
+    contextParts.push(
+      "",
+      "Previous round model planned task array (before execution):",
+      ...previousRoundPlannedTasks.map((task, index) => `${index + 1}. ${task}`),
+    );
+  }
+
+  if (previousRoundModelOutput) {
+    contextParts.push(
+      "",
+      "Previous round model output (normalized, for task reduction input):",
+      previousRoundModelOutput,
+    );
+  }
+
   contextParts.push(
     // 中文释义：要求模型显式返回剩余任务协议
     // - REMAINING: <text> 还有未完成
     // - REMAINING: DONE 当前任务文本已消费完
     "",
-    "After planning this round, if there is still unfinished part of the instruction, include one plain text line:",
-    "REMAINING: <what is still left>",
-    "If nothing is left, include one plain text line: REMAINING: DONE",
+    "After this round, include one plain text line:",
+    "REMAINING: <new remaining instruction after this-round actions>",
+    "or REMAINING: DONE",
   );
 
   // 最近失败操作详情
@@ -256,6 +281,10 @@ export function buildCompactMessages(
 
   if (currentUrl) {
     contextParts.push("", `URL: ${currentUrl}`);
+  }
+
+  if (protocolViolationHint) {
+    contextParts.push("", protocolViolationHint);
   }
 
   if (latestSnapshot) {

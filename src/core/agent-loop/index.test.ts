@@ -100,7 +100,7 @@ describe("executeAgentLoop golden paths", () => {
         usage: { inputTokens: 12, outputTokens: 8 },
       },
       {
-        text: "已完成",
+        text: "已完成\nREMAINING: DONE",
         usage: { inputTokens: 10, outputTokens: 6 },
       },
     ]);
@@ -113,7 +113,7 @@ describe("executeAgentLoop golden paths", () => {
       callbacks: { onMetrics },
     });
 
-    expect(result.reply).toBe("已完成");
+    expect(result.reply).toBe("已完成\nREMAINING: DONE");
     expect(result.toolCalls).toHaveLength(1);
     expect(result.metrics.roundCount).toBe(2);
     expect(result.metrics.totalToolCalls).toBe(1);
@@ -210,16 +210,11 @@ describe("executeAgentLoop golden paths", () => {
     expect(result.metrics.redundantInterceptCount).toBe(2);
   });
 
-  it("导航后重定位：URL 变化触发上下文刷新", async () => {
-    let currentUrl = "https://example.com/a";
+  it("导航后重定位：导航动作触发上下文刷新", async () => {
     const onBeforeRecoverySnapshot = vi.fn();
 
     const registry = createBaseRegistry({
-      getUrl: () => currentUrl,
-      navigateExecute: async (params) => {
-        if (params.action === "goto") {
-          currentUrl = "https://example.com/b";
-        }
+      navigateExecute: async (_params) => {
         return { content: "navigate ok" };
       },
     });
@@ -242,7 +237,7 @@ describe("executeAgentLoop golden paths", () => {
     });
 
     expect(result.reply).toBe("导航完成");
-    expect(onBeforeRecoverySnapshot).toHaveBeenCalledWith("https://example.com/b");
+    expect(onBeforeRecoverySnapshot).toHaveBeenCalled();
   });
 
   it("指标聚合：输出成功率、快照大小、token 汇总", async () => {
@@ -258,7 +253,7 @@ describe("executeAgentLoop golden paths", () => {
       },
       {
         usage: { inputTokens: 90, outputTokens: 20 },
-        text: "结束",
+        text: "结束\nREMAINING: DONE",
       },
     ]);
 
@@ -308,5 +303,113 @@ describe("executeAgentLoop golden paths", () => {
     expect(result.toolCalls).toHaveLength(1);
     expect(result.reply).toContain("REMAINING: DONE");
     expect(result.metrics.roundCount).toBe(2);
+  });
+
+  it("DOM 变更动作后强制断轮：click 后不继续执行同批次后续动作", async () => {
+    const domExecute = vi.fn(async (params: Record<string, unknown>) => ({
+      content: `dom:${String(params.action)}`,
+    }));
+
+    const registry = createBaseRegistry({ domExecute });
+    const client = new ScriptedClient([
+      {
+        text: "REMAINING: 填写标题并提交",
+        toolCalls: [
+          { id: "1", name: "dom", input: { action: "click", selector: "#openModal" } },
+          { id: "2", name: "dom", input: { action: "fill", selector: "#title", value: "任务" } },
+        ],
+      },
+      {
+        assert: ({ messages }) => {
+          const payload = String(messages[messages.length - 1]?.content ?? "");
+          expect(payload).toContain("Previous round planned task array (already executed):");
+          expect(payload).toContain("dom:{\"action\":\"click\",\"selector\":\"#openModal\"}");
+          expect(payload).toContain("Previous round model planned task array (before execution):");
+          expect(payload).toContain("dom:{\"action\":\"fill\",\"selector\":\"#title\",\"value\":\"任务\"}");
+        },
+        text: "REMAINING: DONE",
+        toolCalls: [{ id: "3", name: "dom", input: { action: "fill", selector: "#title", value: "任务" } }],
+      },
+      { text: "完成" },
+    ]);
+
+    const result = await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "打开弹窗并填写标题",
+      maxRounds: 5,
+    });
+
+    expect(domExecute).toHaveBeenCalled();
+    const executedActions = domExecute.mock.calls.map(call => String((call[0] as Record<string, unknown>).action));
+    expect(executedActions[0]).toBe("click");
+    expect(result.toolCalls[0].input).toMatchObject({ action: "click" });
+  });
+
+  it("缺失 REMAINING 协议且本轮有执行动作：启发式推进剩余任务", async () => {
+    const registry = createBaseRegistry();
+
+    const client = new ScriptedClient([
+      {
+        text: "",
+        toolCalls: [{ id: "1", name: "dom", input: { action: "fill", selector: "#input", value: "abc" } }],
+      },
+      {
+        assert: ({ messages }) => {
+          const contextPayload = String(messages[messages.length - 1]?.content ?? "");
+          expect(contextPayload).toContain("Current remaining instruction:");
+          expect(contextPayload).toContain("发送");
+          expect(contextPayload).not.toContain("输入框输入 abc 然后发送");
+          expect(contextPayload).toContain("Previous round model output (normalized");
+          expect(contextPayload).toContain("REMAINING: 发送");
+        },
+        text: "REMAINING: DONE",
+        toolCalls: [{ id: "2", name: "dom", input: { action: "press", selector: "#send", key: "Enter" } }],
+      },
+      { text: "完成" },
+    ]);
+
+    await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "输入框输入 abc 然后发送",
+      maxRounds: 5,
+    });
+  });
+
+  it("未完成但无工具调用：不直接结束，进入下一轮协议修复", async () => {
+    const registry = createBaseRegistry();
+
+    const client = new ScriptedClient([
+      {
+        text: "REMAINING: 打开任务弹窗",
+        toolCalls: [{ id: "1", name: "dom", input: { action: "click", selector: "#openModal" } }],
+      },
+      {
+        text: "根据当前快照，我先规划下步骤。",
+      },
+      {
+        assert: ({ messages }) => {
+          const content = String(messages[messages.length - 1]?.content ?? "");
+          expect(content).toContain("Protocol violation in previous round");
+          expect(content).toContain("Previous round model output (normalized");
+          expect(content).toContain("REMAINING: 打开任务弹窗");
+        },
+        text: "REMAINING: DONE",
+      },
+    ]);
+
+    const result = await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "打开任务弹窗",
+      maxRounds: 5,
+    });
+
+    expect(result.metrics.roundCount).toBe(3);
+    expect(result.reply).toContain("REMAINING: DONE");
   });
 });

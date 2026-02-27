@@ -130,7 +130,7 @@ export class WebAgent {
     this.baseURL = options.baseURL;
     this.stream = options.stream ?? true;
     this.dryRun = options.dryRun ?? false;
-    this.maxRounds = options.maxRounds ?? 10;
+    this.maxRounds = options.maxRounds ?? 40;
     this.customSystemPrompt = options.systemPrompt;
     this.memory = options.memory ?? false;
     this.autoSnapshot = options.autoSnapshot ?? true;
@@ -265,25 +265,27 @@ export class WebAgent {
     // 创建本次对话的 RefStore，快照结束后保持活跃，对话结束后清空
     const refStore = new RefStore(globalThis.location?.href);
     setActiveRefStore(refStore);
+    let initialSnapshot: string | undefined;
 
-    if (this.autoSnapshot) {
-      try {
-        const snapshot = generateSnapshot(document.body, {
-          maxDepth: 8,
-          viewportOnly: false,
-          maxNodes: 500,
-          maxChildren: 30,
-          ...this.snapshotOptions,
-          refStore,
-        });
+    try {
+      const snapshot = generateSnapshot(document.body, {
+        maxDepth: 8,
+        viewportOnly: false,
+        maxNodes: 500,
+        maxChildren: 30,
+        ...this.snapshotOptions,
+        refStore,
+      });
+      initialSnapshot = snapshot;
+      if (this.autoSnapshot) {
         this.callbacks.onSnapshot?.(snapshot);
-
-        systemPrompt += wrapSnapshot(
-          `\n\n## DOM Snapshot\n\`\`\`\n${snapshot}\n\`\`\``,
-        );
-      } catch {
-        // 快照失败不阻塞正常流程
       }
+
+      systemPrompt += wrapSnapshot(
+        `\n\n## DOM Snapshot\n\`\`\`\n${snapshot}\n\`\`\``,
+      );
+    } catch {
+      // 快照失败不阻塞正常流程
     }
 
     // 包装回调：在恢复快照前重置 RefStore，确保新快照的 hash ID 有效
@@ -308,6 +310,7 @@ export class WebAgent {
       registry: this.registry,
       systemPrompt,
       message,
+      initialSnapshot,
       history: this.memory ? this.history : undefined,
       dryRun: this.dryRun,
       maxRounds: this.maxRounds,

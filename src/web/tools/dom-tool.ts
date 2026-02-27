@@ -118,6 +118,27 @@ function dispatchInputEvents(el: HTMLInputElement | HTMLTextAreaElement | HTMLSe
 }
 
 /**
+ * 将常见 key 映射为更接近浏览器语义的 KeyboardEvent.code。
+ */
+function resolveKeyboardCode(key: string): string {
+  const map: Record<string, string> = {
+    Enter: "Enter",
+    Escape: "Escape",
+    Esc: "Escape",
+    Tab: "Tab",
+    Space: "Space",
+    " ": "Space",
+    Backspace: "Backspace",
+    Delete: "Delete",
+    ArrowUp: "ArrowUp",
+    ArrowDown: "ArrowDown",
+    ArrowLeft: "ArrowLeft",
+    ArrowRight: "ArrowRight",
+  };
+  return map[key] ?? key;
+}
+
+/**
  * 生成元素的可读描述，用于在操作结果中展示实际命中的 DOM 节点。
  * 格式：<tag#id.class> "文本" [attr=val, ...]
  */
@@ -127,7 +148,9 @@ function describeElement(el: Element): string {
   const cls = el.className && typeof el.className === "string"
     ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 3).map(c => `.${c}`).join("")
     : "";
-  const text = el.textContent?.trim().slice(0, 40) ?? "";
+  const text = el instanceof HTMLSelectElement
+    ? el.selectedOptions[0]?.textContent?.trim().slice(0, 40) ?? ""
+    : el.textContent?.trim().slice(0, 40) ?? "";
   const textHint = text ? ` "${text}"` : "";
 
   // 关键属性
@@ -135,6 +158,9 @@ function describeElement(el: Element): string {
   for (const attr of ["type", "name", "placeholder", "href", "role"]) {
     const val = el.getAttribute(attr);
     if (val) hints.push(`${attr}=${val}`);
+  }
+  if (el instanceof HTMLSelectElement && el.value) {
+    hints.push(`val=${el.value}`);
   }
   const attrHint = hints.length > 0 ? ` [${hints.join(", ")}]` : "";
 
@@ -161,6 +187,12 @@ export function createDomTool(): ToolDefinition {
       ),
       key: Type.Optional(
         Type.String({ description: "Key name for press action (e.g. Enter, Escape, Tab, ArrowDown, ArrowUp, Backspace, Delete, Space)" }),
+      ),
+      label: Type.Optional(
+        Type.String({ description: "Label text for select_option action (fallback when value is not provided)" }),
+      ),
+      index: Type.Optional(
+        Type.Number({ description: "0-based option index for select_option action" }),
       ),
       attribute: Type.Optional(
         Type.String({ description: "Attribute name for get_attr/set_attr actions" }),
@@ -247,6 +279,10 @@ export function createDomTool(): ToolDefinition {
             // 模拟点击：先 focus 再 click，触发完整事件链
             if (el instanceof HTMLElement) {
               el.focus();
+              el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+              el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+              el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true }));
+              el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
               el.click();
             } else {
               el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -281,7 +317,7 @@ export function createDomTool(): ToolDefinition {
 
             const eventInit: KeyboardEventInit = {
               key,
-              code: key,
+              code: resolveKeyboardCode(key),
               bubbles: true,
               cancelable: true,
             };
@@ -297,6 +333,15 @@ export function createDomTool(): ToolDefinition {
             if (value === undefined) return { content: "缺少 value 参数" };
 
             if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+              if (el instanceof HTMLInputElement) {
+                const blockedTypes = new Set(["checkbox", "radio", "file", "button", "submit", "reset"]);
+                if (blockedTypes.has(el.type)) {
+                  return {
+                    content: `"${selector}" 为 input[type=${el.type}]，不支持 fill；请使用 click/press/select_option 等动作。`,
+                    details: { error: true, code: "UNSUPPORTED_FILL_TARGET", action, selector },
+                  };
+                }
+              }
               el.focus();
               el.value = value;
               dispatchInputEvents(el);
@@ -342,8 +387,12 @@ export function createDomTool(): ToolDefinition {
 
           case "select_option": {
             // Playwright-like selectOption：通过 value 或 label 精确选择下拉项
-            const value = params.value as string;
-            if (value === undefined) return { content: "缺少 value 参数" };
+            const value = params.value as string | undefined;
+            const label = params.label as string | undefined;
+            const index = typeof params.index === "number" ? Math.floor(params.index) : undefined;
+            if (value === undefined && label === undefined && index === undefined) {
+              return { content: "缺少可选参数：value 或 label 或 index" };
+            }
 
             if (!(el instanceof HTMLSelectElement)) {
               return { content: `"${selector}" 不是下拉框元素` };
@@ -351,32 +400,51 @@ export function createDomTool(): ToolDefinition {
 
             el.focus();
 
-            let matched = false;
-            for (const option of Array.from(el.options)) {
-              if (option.value === value) {
-                el.value = option.value;
-                matched = true;
-                break;
-              }
+            const options = Array.from(el.options);
+            let selectedOption: HTMLOptionElement | undefined;
+
+            if (value !== undefined) {
+              selectedOption = options.find(option => option.value === value);
             }
 
-            if (!matched) {
-              const normalized = value.trim().toLowerCase();
-              for (const option of Array.from(el.options)) {
-                if (option.text.trim().toLowerCase() === normalized) {
-                  el.value = option.value;
-                  matched = true;
-                  break;
-                }
-              }
+            if (!selectedOption && label !== undefined) {
+              const normalizedLabel = label.trim().toLowerCase();
+              selectedOption = options.find(option => option.text.trim().toLowerCase() === normalizedLabel);
             }
 
-            if (!matched) {
-              return { content: `"${selector}" 下拉框中不存在选项 "${value}"` };
+            if (!selectedOption && value !== undefined) {
+              const normalizedValueAsLabel = value.trim().toLowerCase();
+              selectedOption = options.find(option => option.text.trim().toLowerCase() === normalizedValueAsLabel);
             }
+
+            if (!selectedOption && index !== undefined) {
+              if (index < 0 || index >= options.length) {
+                return { content: `"${selector}" 下拉框不存在 index=${index} 的选项` };
+              }
+              selectedOption = options[index];
+            }
+
+            if (!selectedOption) {
+              const wanted = value ?? label ?? `index=${index}`;
+              return { content: `"${selector}" 下拉框中不存在选项 "${wanted}"` };
+            }
+
+            if (selectedOption.disabled) {
+              return { content: `"${selector}" 目标选项已禁用：${selectedOption.value}` };
+            }
+
+            if (!el.multiple) {
+              for (const option of options) {
+                option.selected = false;
+              }
+            }
+            selectedOption.selected = true;
+            el.value = selectedOption.value;
 
             dispatchInputEvents(el);
-            return { content: `已选择 ${describeElement(el)}: "${el.value}"` };
+            return {
+              content: `已选择 ${describeElement(el)}: value="${selectedOption.value}", label="${selectedOption.text.trim()}"`,
+            };
           }
 
           case "type": {

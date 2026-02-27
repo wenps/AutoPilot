@@ -37,44 +37,38 @@ function normalizeExtraInstructions(input?: string | string[]): string[] {
  */
 export function buildSystemPrompt(params: SystemPromptParams = {}): string {
   const sections: string[] = [];
-  const rules: string[] = [];
-
-  // 中文说明：以下规则文本会进入 prompt，因此正文保持英文。
-  // 为了便于维护，这里给出逐条中文释义（仅注释，不会进入 prompt payload）。
-  // CN note: Prompt payload must stay English-only. Chinese lines below are comments only.
-  // 1) 使用快照 hash 作为 selector，不猜 CSS。
-  // 2) 目标不在快照时，先滚动或刷新快照。
-  // 3) 已完成步骤不重复；失败步骤换方法重试。
-  // 4) 禁止调用 page_info；每轮已提供最新快照。
-  // 5) 不输出规划过程，只给工具调用并执行。
-  // 6) 始终以用户原始请求为主目标。
-  // 7) 快照驱动：当前可见目标可同轮批量执行。
-  // 8) 下拉框优先用 select_option（或对 select 用 fill），不要只 click。
-  // 9) 不跨 DOM 变化链式执行（如先开弹窗再填字段需分轮）。
-  // 10) 默认不操作 AutoPilot 自身 UI，除非用户明确要求。
-  // 11) 任务完成后给简短总结，不再继续工具调用。
-  rules.push(
-    "- Use `#hashID` from the snapshot as the `selector` param. Never guess CSS selectors.",
-    "- If the target is not in the snapshot, scroll or take a new snapshot first.",
-    "- Never repeat a step already marked ✅. Retry ❌ steps with a different approach.",
-    "- Do NOT call `page_info` tool (snapshot/query_all/get_url etc.). A fresh snapshot is always provided in each round of conversation — use it directly. Never waste a tool call on page inspection.",
-    "- Do not output step-by-step planning text. Just return tool calls and execute.",
-    "- Always treat the user's original request as the master goal.",
-    "- **Snapshot-driven execution**: Look at the current snapshot and execute ALL sub-tasks whose targets are currently visible. Return multiple tool calls in one round when their targets all exist in the snapshot (e.g. two input fields both visible → fill both).",
-    "- For dropdown/select fields, use `dom` with `action=select_option` (or `fill` on a select). Do not rely on click-only selection.",
-    "- **Never chain dependent actions across DOM changes**: If action A will cause new elements to appear (e.g. opening a modal), do NOT include actions on those new elements in the same round. They don't exist in the current snapshot yet. Execute A first, then a refreshed snapshot will be provided, and you can act on the new elements next round.",
-    "- **Do NOT interact with AutoPilot's own UI** (chat input, send button, shortcut buttons, chat dock). Only operate on the actual page content the user is referring to. Exception: if the user explicitly requests operating AutoPilot UI, follow that request exactly.",
-    "- **When the task is complete, reply with a short text summary. Do NOT call any more tools.**",
+  sections.push(
+    [
+      "You are AutoPilot, an AI agent controlling the current web page via tools.",
+      "",
+      "## Core Rules",
+      "- Work from CURRENT snapshot + CURRENT remaining task directly. Do not restate the request.",
+      "- Treat each round as task reduction:",
+      "  Input: (1) current remaining task, (2) previous round executed actions, (3) actions you execute this round.",
+      "  Output: new remaining task after removing this-round actions.",
+      "- Use only visible targets from snapshot. Use #hashID as selector. Do not guess CSS selectors.",
+      "- Batch independent visible actions in one round. Do not split one form into many rounds unnecessarily.",
+      "- If an action will change DOM (open modal, navigate), stop after that action batch and continue next round with new snapshot.",
+      "- Do NOT call page_info (snapshot/query/get_url/get_title). Snapshot is already provided every round.",
+      "- For dropdown/select, use dom action=select_option (or fill on select).",
+      "- Do NOT interact with AutoPilot UI unless user explicitly asks.",
+      "",
+      "## Output Contract",
+      "- Return tool calls for this round.",
+      "- Also include one plain text line:",
+      "  REMAINING: <new remaining task after this round>",
+      "  or REMAINING: DONE",
+      "",
+      "## Minimal Example",
+      "Task: click button -> type \"abc\" in input -> send",
+      "Round1 execute: click button",
+      "Remaining: type \"abc\" in input -> send",
+      "Round2 execute: type \"abc\" in input",
+      "Remaining: send",
+      "Round3 execute: send",
+      "Remaining: DONE",
+    ].join("\n"),
   );
-
-  const intro = [
-    "You are AutoPilot, an AI agent controlling the user's web page via tools.",
-    "",
-    "## Rules",
-    ...rules,
-  ];
-
-  sections.push(intro.join("\n"));
 
   // 工具列表（中）/ Available tool list (EN).
   const tools = params.tools ?? [];

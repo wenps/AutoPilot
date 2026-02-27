@@ -7,7 +7,7 @@
 import type { ToolCallResult } from "../tool-registry.js";
 import type { AgentLoopCallbacks } from "./types.js";
 import { DEFAULT_ACTION_RECOVERY_ROUNDS } from "./constants.js";
-import { readPageSnapshot, readPageUrl } from "./snapshot.js";
+import { readPageSnapshot } from "./snapshot.js";
 import {
   getToolAction,
   hasToolError,
@@ -31,16 +31,16 @@ const REDUNDANT_PAGE_INFO_ACTIONS = new Set(["snapshot", "query_all", "get_url",
 export function checkRedundantSnapshot(
   toolName: string,
   toolInput: unknown,
-  latestSnapshot: string | undefined,
+  _latestSnapshot: string | undefined,
   round: number,
 ): ToolCallResult | null {
-  if (toolName !== "page_info" || !latestSnapshot) return null;
+  if (toolName !== "page_info") return null;
 
   const action = getToolAction(toolInput);
   if (action && REDUNDANT_PAGE_INFO_ACTIONS.has(action)) {
     return {
       content:
-        `page_info.${action} is unnecessary — snapshot and page context are already provided in the conversation. Proceed with actionable tool calls directly.`,
+        `page_info.${action} is blocked in loop execution. A snapshot is provided by the framework; continue with actionable tools directly.`,
       details: {
         code: "REDUNDANT_PAGE_INFO_SKIPPED",
         action,
@@ -145,7 +145,7 @@ export async function handleElementRecovery(
 
 // ─── 导航后 URL 变化检测 ───
 
-/** 导航后 URL 检测（中）/ Detect URL change after navigation actions (EN). */
+/** 导航后快照刷新（中）/ Refresh snapshot after navigation actions (EN). */
 export async function handleNavigationUrlChange(
   toolName: string,
   toolInput: unknown,
@@ -161,12 +161,8 @@ export async function handleNavigationUrlChange(
     (action === "goto" || action === "back" || action === "forward" || action === "reload") &&
     !hasToolError(result)
   ) {
-    const newUrl = await readPageUrl(registry);
-    if (newUrl && newUrl !== pageContext.currentUrl) {
-      pageContext.currentUrl = newUrl;
-      callbacks?.onBeforeRecoverySnapshot?.(newUrl);
-      pageContext.latestSnapshot = await readPageSnapshot(registry);
-    }
+    callbacks?.onBeforeRecoverySnapshot?.();
+    pageContext.latestSnapshot = await readPageSnapshot(registry);
   }
 }
 

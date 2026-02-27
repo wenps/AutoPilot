@@ -59,11 +59,13 @@ export type AgentLoopParams = {
   systemPrompt: string;
   /** 用户消息 */
   message: string;
+  /** 对话发起时前端已生成的初始快照（可选） */
+  initialSnapshot?: string;
   /** 历史对话消息（用于多轮记忆，按时间顺序排列） */
   history?: AIMessage[];
   /** 干运行模式：打印工具调用但不执行 */
   dryRun?: boolean;
-  /** 最大工具调用轮次（默认 10） */
+  /** 最大工具调用轮次（默认 40） */
   maxRounds?: number;
   /** 事件回调 */
   callbacks?: AgentLoopCallbacks;
