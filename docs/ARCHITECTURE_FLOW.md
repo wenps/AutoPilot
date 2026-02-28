@@ -245,6 +245,33 @@ DOM 路径 + 页面 URL → FNV-1a 哈希 → base36 编码 → 如 "a1b2c"
 | **每轮工具执行完后** | `Agent Loop` | 统一刷新，供下一轮直接使用 |
 | **AI 主动请求** | `page_info.snapshot` | AI 觉得需要的时候 |
 
+### 快照读取流程图
+
+```mermaid
+flowchart TD
+  A[Round 开始] --> B{已有 latestSnapshot?}
+  B -->|是| C[复用 latestSnapshot]
+  B -->|否| D[readPageSnapshot]
+  D --> E[page_info.snapshot]
+  E --> F[得到 snapshot 文本]
+  F --> G[recordSnapshotStats]
+  C --> H[wrapSnapshot]
+  G --> H
+  H --> I[buildCompactMessages 注入 Latest DOM snapshot]
+  I --> J[stripSnapshotFromPrompt]
+  J --> K[client.chat]
+  K --> L[dispatch tools]
+  L --> M{触发刷新条件?}
+  M -->|导航成功| N[handleNavigationUrlChange -> readPageSnapshot]
+  M -->|元素未找到恢复| O[handleElementRecovery -> readPageSnapshot]
+  M -->|本轮结束统一刷新| P[refreshSnapshot -> readPageSnapshot]
+  M -->|无| Q[下一轮]
+  N --> G
+  O --> G
+  P --> G
+  Q --> B
+```
+
 ### 快照优化手段
 
 | 优化 | 说明 | 默认值 |

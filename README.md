@@ -432,6 +432,26 @@ sequenceDiagram
 - 去重历史快照
 - 剥离旧 prompt 快照
 
+### 快照读取流程图
+
+```mermaid
+flowchart TD
+  A[chat 开始 / 新一轮开始] --> B{是否已有 latestSnapshot}
+  B -->|有| C[直接复用当前快照]
+  B -->|无| D[readPageSnapshot via page_info.snapshot]
+  D --> E[recordSnapshotStats 更新统计]
+  E --> F[wrapSnapshot 添加 SNAPSHOT_START/END]
+  C --> G[buildCompactMessages 注入 Latest DOM snapshot]
+  F --> G
+  G --> H[stripSnapshotFromPrompt 剥离 system prompt 旧快照]
+  H --> I[发送给模型并执行工具]
+  I --> J{是否触发恢复重拍}
+  J -->|导航成功/元素未找到恢复/每轮结束刷新| K[readPageSnapshot 刷新 latestSnapshot]
+  J -->|否| L[进入下一轮]
+  K --> E
+  L --> B
+```
+
 ---
 
 ## 保护机制
