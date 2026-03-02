@@ -96,6 +96,9 @@ export async function readPageSnapshot(
     maxNodes?: number;
     maxChildren?: number;
     maxTextLength?: number;
+    expandOptionLists?: boolean;
+    expandChildrenRefs?: string[];
+    expandedChildrenLimit?: number;
   },
 ): Promise<string> {
   const result = await registry.dispatch("page_info", {
@@ -106,6 +109,9 @@ export async function readPageSnapshot(
     maxNodes: options?.maxNodes ?? 500,
     maxChildren: options?.maxChildren ?? 30,
     maxTextLength: options?.maxTextLength ?? 40,
+    expandOptionLists: options?.expandOptionLists,
+    expandChildrenRefs: options?.expandChildrenRefs,
+    expandedChildrenLimit: options?.expandedChildrenLimit,
   });
   return toContentString(result.content);
 }

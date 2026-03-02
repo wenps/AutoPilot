@@ -532,7 +532,7 @@ export function createDomTool(): ToolDefinition {
     name: "dom",
     description: [
       "Perform DOM operations on the current page.",
-      "Actions: click, fill, select_option, clear, check, uncheck, type, focus, hover, press, get_text, get_attr, set_attr, add_class, remove_class.",
+      "Actions: click, fill, select_option, clear, check, uncheck, type, focus, hover, scroll, press, get_text, get_attr, set_attr, add_class, remove_class.",
       "Input/Select rule: before each fill/type/select_option, click or focus the same target immediately in the same round.",
       "For multiple fields, use alternating pairs in one batch: focus/click A -> fill/type A -> focus/click B -> fill/type B.",
       "Use the hash ID from DOM snapshot (e.g. #a1b2c) as selector.",
@@ -542,11 +542,12 @@ export function createDomTool(): ToolDefinition {
       "Disambiguation rule: distinguish descriptive text/labels from actionable options. Do not click nearby label/help text; click the actual interactive option/control item (icon/button/option) that changes state.",
       "Unknown/complex components: if a container element (e.g. role=slider, rating, custom widget) has multiple child icons/items in the snapshot but you don't know how to operate it directly, try clicking the appropriate child element instead. For example, a rating component with 5 star icon children — click the 4th icon child to set 4 stars. A slider with a runway — clicking the runway at the right position may work. Always prefer interacting with visible children when the parent container doesn't respond to fill/click as expected.",
       "fill supports role=slider elements: use fill with a numeric value on a role=slider container (rating/slider) to set its value programmatically.",
+      "For wheel/virtualized pickers where target option is not visible yet, use scroll on the picker column first, then click/select the newly visible option. scroll supports steps for repeated scrolling in one call.",
     ].join(" "),
 
     schema: Type.Object({
       action: Type.String({
-        description: "DOM action: click | fill | select_option | clear | check | uncheck | type | focus | hover | press | get_text | get_attr | set_attr | add_class | remove_class.",
+        description: "DOM action: click | fill | select_option | clear | check | uncheck | type | focus | hover | scroll | press | get_text | get_attr | set_attr | add_class | remove_class.",
       }),
       selector: Type.String({ description: "Element ref ID from snapshot (e.g. #r0, #r5) or CSS selector" }),
       value: Type.Optional(Type.String({ description: "Value for fill/type/set_attr actions." })),
@@ -556,6 +557,9 @@ export function createDomTool(): ToolDefinition {
       attribute: Type.Optional(Type.String({ description: "Attribute name for get_attr/set_attr" })),
       className: Type.Optional(Type.String({ description: "CSS class name for add_class/remove_class" })),
       clickCount: Type.Optional(Type.Number({ description: "Click count (default 1). 2 = double-click, 3 = triple-click." })),
+      deltaY: Type.Optional(Type.Number({ description: "Vertical scroll delta for scroll action. Positive = down, negative = up." })),
+      deltaX: Type.Optional(Type.Number({ description: "Horizontal scroll delta for scroll action." })),
+      steps: Type.Optional(Type.Number({ description: "Repeat count for scroll action (default 1, max 20)." })),
       waitMs: Type.Optional(Type.Number({ description: "Wait timeout in ms before action (default: 2000)." })),
       waitSeconds: Type.Optional(Type.Number({ description: "Wait timeout in seconds (fallback for waitMs)." })),
       force: Type.Optional(Type.Boolean({ description: "Skip actionability checks (default false)." })),
@@ -839,6 +843,41 @@ export function createDomTool(): ToolDefinition {
             if (!force) await checkElementStable(target, 500);
             if (target instanceof HTMLElement) dispatchHoverEvents(target);
             return { content: `已悬停 ${describeElement(target)}` };
+          }
+
+          // ─── scroll（组件内滚动，适配时间滚轮/虚拟列表） ───
+          case "scroll": {
+            const target = retarget(el, "none");
+            const deltaY = typeof params.deltaY === "number"
+              ? params.deltaY
+              : (typeof params.value === "string" && !Number.isNaN(Number(params.value)) ? Number(params.value) : 180);
+            const deltaX = typeof params.deltaX === "number" ? params.deltaX : 0;
+            const rawSteps = typeof params.steps === "number" ? Math.floor(params.steps) : 1;
+            const steps = Math.min(20, Math.max(1, rawSteps));
+
+            if (target instanceof HTMLElement) {
+              scrollIntoViewIfNeeded(target);
+              for (let i = 0; i < steps; i++) {
+                target.scrollBy({ top: deltaY, left: deltaX, behavior: "auto" });
+                target.dispatchEvent(new WheelEvent("wheel", {
+                  bubbles: true,
+                  cancelable: true,
+                  deltaY,
+                  deltaX,
+                }));
+              }
+              return { content: `已滚动 ${describeElement(target)}: deltaY=${deltaY}, deltaX=${deltaX}, steps=${steps}` };
+            }
+
+            for (let i = 0; i < steps; i++) {
+              target.dispatchEvent(new WheelEvent("wheel", {
+                bubbles: true,
+                cancelable: true,
+                deltaY,
+                deltaX,
+              }));
+            }
+            return { content: `已滚动 ${describeElement(target)}: deltaY=${deltaY}, deltaX=${deltaX}, steps=${steps}` };
           }
 
           // ─── press（支持组合键） ───

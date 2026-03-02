@@ -166,6 +166,7 @@ export function buildCompactMessages(
         "For deterministic increase/decrease controls, compute delta from current visible value and issue exactly that many clicks in one round (e.g., +2 => two increase clicks). Do not overshoot then undo.",
         "If action changes DOM (open modal/navigate), stop that batch and continue next round.",
         "For dropdown/select fields, use dom with action=select_option (or fill on a select).",
+        "If a needed list shows `... (N children omitted)` under a specific container, output `SNAPSHOT_HINT: EXPAND_CHILDREN #<containerRef>` and wait for next round snapshot.",
         "Stop rule: once requested state is reached, stop tool calls. If verification is needed, verify once and then output REMAINING: DONE.",
         allowAgentUiInteraction
           ? "User explicitly asked to operate AutoPilot UI. You may interact with chat input/send/dock only as requested."
@@ -221,6 +222,7 @@ export function buildCompactMessages(
     "If action changes DOM (open modal/navigate), stop after that batch and continue next round.",
     "Do NOT call page_info (get_url/get_title/query_all/snapshot).",
     "For dropdown/select fields, use dom with action=select_option (or fill on a select).",
+    "If a needed list shows `... (N children omitted)` under a specific container, output `SNAPSHOT_HINT: EXPAND_CHILDREN #<containerRef>` and wait for next round snapshot.",
     "Build the minimal action array from current snapshot to finish this remaining instruction in one round whenever possible.",
     "For deterministic increase/decrease controls, compute delta from current visible value and issue exactly that many clicks in one round (e.g., +2 => two increase clicks). Do not overshoot then undo.",
     "Stop rule: once requested state is reached, stop tool calls. If verification is needed, verify once and then output REMAINING: DONE.",

@@ -412,4 +412,104 @@ describe("executeAgentLoop golden paths", () => {
     expect(result.metrics.roundCount).toBe(3);
     expect(result.reply).toContain("REMAINING: DONE");
   });
+
+  it("AI 输出 SNAPSHOT_HINT 后：下一轮快照按指定 ref 放宽 children 截断", async () => {
+    const snapshotParamsHistory: Array<Record<string, unknown>> = [];
+    const registry = new ToolRegistry();
+
+    registry.register({
+      name: "page_info",
+      description: "page info",
+      schema: Type.Object({ action: Type.String() }),
+      execute: async (params: Record<string, unknown>) => {
+        if (params.action === "snapshot") {
+          snapshotParamsHistory.push({ ...params });
+          return { content: "[body] #snap" };
+        }
+        if (params.action === "get_url") {
+          return { content: "https://example.com" };
+        }
+        return { content: "ok" };
+      },
+    });
+
+    registry.register({
+      name: "dom",
+      description: "dom tool",
+      schema: Type.Object({ action: Type.String() }),
+      execute: async () => ({ content: "dom ok" }),
+    });
+
+    const client = new ScriptedClient([
+      {
+        text: "SNAPSHOT_HINT: EXPAND_CHILDREN #1rv01x\nREMAINING: 继续选择秒",
+        toolCalls: [{ id: "1", name: "dom", input: { action: "scroll", selector: "#1rv01x", deltaY: 100 } }],
+      },
+      {
+        text: "完成\nREMAINING: DONE",
+      },
+    ]);
+
+    await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "选择时间 17:20:50",
+      maxRounds: 4,
+    });
+
+    expect(snapshotParamsHistory.length).toBeGreaterThanOrEqual(2);
+    const expandedSnapshotCall = snapshotParamsHistory.find(p =>
+      Array.isArray(p.expandChildrenRefs) && (p.expandChildrenRefs as unknown[]).includes("1rv01x"),
+    );
+    expect(expandedSnapshotCall).toBeTruthy();
+    expect(expandedSnapshotCall?.expandedChildrenLimit).toBe(120);
+  });
+
+  it("未输出 SNAPSHOT_HINT 时：dom.scroll 也会自动触发该 ref 的快照放宽", async () => {
+    const snapshotParamsHistory: Array<Record<string, unknown>> = [];
+    const registry = new ToolRegistry();
+
+    registry.register({
+      name: "page_info",
+      description: "page info",
+      schema: Type.Object({ action: Type.String() }),
+      execute: async (params: Record<string, unknown>) => {
+        if (params.action === "snapshot") {
+          snapshotParamsHistory.push({ ...params });
+          return { content: "[body] #snap" };
+        }
+        if (params.action === "get_url") return { content: "https://example.com" };
+        return { content: "ok" };
+      },
+    });
+
+    registry.register({
+      name: "dom",
+      description: "dom tool",
+      schema: Type.Object({ action: Type.String() }),
+      execute: async () => ({ content: "dom ok" }),
+    });
+
+    const client = new ScriptedClient([
+      {
+        text: "REMAINING: 继续",
+        toolCalls: [{ id: "1", name: "dom", input: { action: "scroll", selector: "#1rv01x" } }],
+      },
+      { text: "完成\nREMAINING: DONE" },
+    ]);
+
+    await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "测试 scroll 自动放宽",
+      maxRounds: 4,
+    });
+
+    const expandedSnapshotCall = snapshotParamsHistory.find(p =>
+      Array.isArray(p.expandChildrenRefs) && (p.expandChildrenRefs as unknown[]).includes("1rv01x"),
+    );
+    expect(expandedSnapshotCall).toBeTruthy();
+  });
 });

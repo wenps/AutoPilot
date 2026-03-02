@@ -45,7 +45,56 @@ export type SnapshotOptions = {
   maxChildren?: number;
   /** 文本截断长度（默认 40）。 */
   maxTextLength?: number;
+  /**
+   * 是否对“选项列表”容器放宽子节点截断（默认 false）。
+   * 典型场景：时间选择器/下拉选项列表，避免关键选项被 `...children omitted` 折叠。
+   */
+  expandOptionLists?: boolean;
+  /**
+   * 仅对指定 hash ref 节点放宽子节点截断（优先级高于默认 maxChildren）。
+   * 例如：[#abc123, #def456]，用于 AI 在看到 children omitted 后定向请求放宽。
+   */
+  expandChildrenRefs?: string[];
+  /** 对 expandChildrenRefs 节点生效的子节点上限（默认 120）。 */
+  expandedChildrenLimit?: number;
 };
+
+/** 快照属性值最大保留长度（超出截断）。 */
+const MAX_SNAPSHOT_ATTR_VALUE_LENGTH = 120;
+/** 选项列表放宽时的子节点上限（仍保留硬上限，避免快照无限膨胀）。 */
+const MAX_EXPANDED_LIST_CHILDREN = 120;
+/** 定向放宽 children 的硬上限。 */
+const MAX_EXPANDED_CHILDREN_LIMIT = 300;
+
+/**
+ * 规整快照属性值，避免把长 base64/data URL 原样注入快照。
+ */
+function sanitizeSnapshotAttrValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  const dataUrlMatch = trimmed.match(/^data:([^,]*?),(.*)$/i);
+  if (dataUrlMatch) {
+    const meta = dataUrlMatch[1] || "";
+    const payload = dataUrlMatch[2] || "";
+    const isBase64 = /;base64/i.test(meta);
+    const payloadLength = payload.length;
+    const previewMeta = meta.slice(0, 48);
+    if (isBase64 || payloadLength > 64) {
+      return `data:${previewMeta},<omitted:${payloadLength}>`;
+    }
+  }
+
+  const base64ChunkMatch = trimmed.match(/^[A-Za-z0-9+/]{80,}={0,2}$/);
+  if (base64ChunkMatch) {
+    return `<base64:${trimmed.length}>`;
+  }
+
+  if (trimmed.length > MAX_SNAPSHOT_ATTR_VALUE_LENGTH) {
+    return `${trimmed.slice(0, MAX_SNAPSHOT_ATTR_VALUE_LENGTH)}...`;
+  }
+  return trimmed;
+}
 
 /**
  * 生成页面 DOM 快照 — 将 DOM 树转为 AI 可理解的文本描述。
@@ -82,6 +131,16 @@ export function generateSnapshot(
   const maxNodes = opts.maxNodes ?? 220;
   const maxChildren = opts.maxChildren ?? 25;
   const maxTextLength = opts.maxTextLength ?? 40;
+  const expandOptionLists = opts.expandOptionLists ?? false;
+  const expandedChildrenLimit = Math.min(
+    MAX_EXPANDED_CHILDREN_LIMIT,
+    Math.max(1, opts.expandedChildrenLimit ?? MAX_EXPANDED_LIST_CHILDREN),
+  );
+  const expandChildrenRefSet = new Set(
+    (opts.expandChildrenRefs ?? [])
+      .map(ref => ref.trim().replace(/^#/, ""))
+      .filter(Boolean),
+  );
 
   let emittedNodes = 0;
   let truncatedByNodeBudget = false;
@@ -180,6 +239,41 @@ export function generateSnapshot(
     return false;
   }
 
+  /** 判断是否为“选项列表”容器（时间/下拉/listbox 等）。 */
+  function isOptionListContainer(el: Element): boolean {
+    if (el.getAttribute("role") === "listbox") return true;
+    const cls = (el.getAttribute("class") || "").toLowerCase();
+    if (
+      cls.includes("time-spinner__list") ||
+      cls.includes("select-dropdown") ||
+      cls.includes("virtual-list") ||
+      cls.includes("option")
+    ) {
+      return true;
+    }
+
+    if (el.tagName === "UL") {
+      const children = Array.from(el.children);
+      if (children.length >= 20) {
+        const liCount = children.filter(child => child.tagName === "LI").length;
+        if (liCount / children.length >= 0.8) return true;
+      }
+    }
+    return false;
+  }
+
+  /** 针对子节点截断计算动态上限。 */
+  function resolveChildLimit(el: Element, defaultLimit: number, hashId?: string): number {
+    let nextLimit = defaultLimit;
+    if (expandOptionLists && isOptionListContainer(el)) {
+      nextLimit = Math.max(nextLimit, MAX_EXPANDED_LIST_CHILDREN);
+    }
+    if (hashId && expandChildrenRefSet.has(hashId)) {
+      nextLimit = Math.max(nextLimit, expandedChildrenLimit);
+    }
+    return nextLimit;
+  }
+
   function walk(el: Element, depth: number, parentPath: string): string {
     if (emittedNodes >= maxNodes) {
       truncatedByNodeBudget = true;
@@ -206,6 +300,7 @@ export function generateSnapshot(
     // 构建当前元素的内部路径（用于 hash 计算，不输出到快照）
     const index = getSiblingIndex(el);
     const currentPath = `${parentPath}/${tag}${index}`;
+    const hashId = refStore ? refStore.set(el, currentPath) : undefined;
 
     // 收集有意义的属性（精简版：只保留对 AI 操作有用的信息）
     const attrs: string[] = [];
@@ -225,7 +320,10 @@ export function generateSnapshot(
     // 3. 交互属性（href, type, placeholder 等）
     for (const attr of INTERACTIVE_ATTRS) {
       const val = el.getAttribute(attr);
-      if (val) attrs.push(`${attr}="${val}"`);
+      if (val) {
+        const safeVal = sanitizeSnapshotAttrValue(val);
+        if (safeVal) attrs.push(`${attr}="${safeVal}"`);
+      }
     }
 
     // 4. 布尔状态属性（disabled, checked 等）
@@ -246,11 +344,14 @@ export function generateSnapshot(
 
     // 6. data-* 属性 — 只保留 data-testid（自动化测试定位用）
     const testId = el.getAttribute("data-testid") || el.getAttribute("data-test-id");
-    if (testId) attrs.push(`data-testid="${testId.slice(0, 25)}"`);
+    if (testId) {
+      const safeTestId = sanitizeSnapshotAttrValue(testId).slice(0, 25);
+      if (safeTestId) attrs.push(`data-testid="${safeTestId}"`);
+    }
 
     // 7. 对于 input/textarea，补充当前实际 value（截短到 40 字符）
     if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && el.value) {
-      const currentVal = el.value.slice(0, 40);
+      const currentVal = sanitizeSnapshotAttrValue(el.value).slice(0, 40);
       const attrVal = el.getAttribute("value");
       if (attrVal !== currentVal) {
         attrs.push(`val="${currentVal}"`);
@@ -264,7 +365,7 @@ export function generateSnapshot(
 
     // 8. 对于 select，补充当前选中 value；对于 option，按运行时 selected 状态输出
     if (el instanceof HTMLSelectElement && el.value) {
-      attrs.push(`val="${el.value.slice(0, 40)}"`);
+      attrs.push(`val="${sanitizeSnapshotAttrValue(el.value).slice(0, 40)}"`);
     }
     if (el instanceof HTMLOptionElement && el.selected) {
       if (!attrs.includes("selected")) attrs.push("selected");
@@ -290,7 +391,8 @@ export function generateSnapshot(
       const interactiveChildren = allChildren.filter(isInteractiveElement);
       const nonInteractiveChildren = allChildren.filter((child) => !isInteractiveElement(child));
       const orderedChildren = [...interactiveChildren, ...nonInteractiveChildren];
-      const selectedChildren = orderedChildren.slice(0, maxChildren);
+      const childLimit = resolveChildLimit(el, maxChildren, hashId);
+      const selectedChildren = orderedChildren.slice(0, childLimit);
       const omittedChildren = orderedChildren.length - selectedChildren.length;
 
       const childBlocks: string[] = [];
@@ -330,8 +432,7 @@ export function generateSnapshot(
     if (directText) line += ` "${directText.slice(0, maxTextLength)}"`;
     if (attrs.length) line += ` ${attrs.join(" ")}`;
     // 使用 hash ID（如 #a1b2c）或回退到完整 XPath
-    if (refStore) {
-      const hashId = refStore.set(el, currentPath);
+    if (hashId) {
       line += ` #${hashId}`;
     } else {
       line += ` ref="${currentPath}"`;
@@ -345,7 +446,8 @@ export function generateSnapshot(
     const interactiveChildren = allChildren.filter(isInteractiveElement);
     const nonInteractiveChildren = allChildren.filter((child) => !isInteractiveElement(child));
     const orderedChildren = [...interactiveChildren, ...nonInteractiveChildren];
-    const selectedChildren = orderedChildren.slice(0, maxChildren);
+    const childLimit = resolveChildLimit(el, maxChildren, hashId);
+    const selectedChildren = orderedChildren.slice(0, childLimit);
     const omittedChildren = orderedChildren.length - selectedChildren.length;
 
     for (let i = 0; i < selectedChildren.length; i++) {
@@ -445,6 +547,15 @@ export function createPageInfoTool(): ToolDefinition {
       maxTextLength: Type.Optional(
         Type.Number({ description: "Maximum text length per node (default: 40)" }),
       ),
+      expandOptionLists: Type.Optional(
+        Type.Boolean({ description: "Expand option-list containers to avoid child truncation (default: false)" }),
+      ),
+      expandChildrenRefs: Type.Optional(
+        Type.Array(Type.String({ description: "Hash refs to expand child truncation for (e.g. #abc123)" })),
+      ),
+      expandedChildrenLimit: Type.Optional(
+        Type.Number({ description: "Child limit for expandChildrenRefs nodes (default: 120, max: 300)" }),
+      ),
     }),
 
     execute: async (params): Promise<ToolCallResult> => {
@@ -486,6 +597,13 @@ export function createPageInfoTool(): ToolDefinition {
             const maxNodes = (params.maxNodes as number) ?? 220;
             const maxChildren = (params.maxChildren as number) ?? 25;
             const maxTextLength = (params.maxTextLength as number) ?? 40;
+            const expandOptionLists = (params.expandOptionLists as boolean) ?? false;
+            const expandChildrenRefs = Array.isArray(params.expandChildrenRefs)
+              ? (params.expandChildrenRefs as unknown[]).filter((ref): ref is string => typeof ref === "string")
+              : undefined;
+            const expandedChildrenLimit = typeof params.expandedChildrenLimit === "number"
+              ? params.expandedChildrenLimit as number
+              : undefined;
             const snapshot = generateSnapshot(document.body, {
               maxDepth,
               viewportOnly,
@@ -493,6 +611,9 @@ export function createPageInfoTool(): ToolDefinition {
               maxNodes,
               maxChildren,
               maxTextLength,
+              expandOptionLists,
+              expandChildrenRefs,
+              expandedChildrenLimit,
               refStore: getActiveRefStore(),
             });
             return { content: snapshot };

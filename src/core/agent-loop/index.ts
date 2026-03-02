@@ -100,6 +100,7 @@ export async function executeAgentLoop(
   let consecutiveSamePlannedBatch = 0;
   let lastRoundHadError = false;
   let protocolViolationHint: string | undefined;
+  const snapshotExpandRefIds = new Set<string>();
   // 恢复与拦截统计（中）/ Recovery/interception counters (EN).
   let recoveryCount = 0;
   let redundantInterceptCount = 0;
@@ -142,8 +143,43 @@ export async function executeAgentLoop(
    * Does exactly two things: read latest snapshot + update metrics.
    */
   const refreshSnapshot = async (): Promise<void> => {
-    pageContext.latestSnapshot = await readPageSnapshot(registry);
+    pageContext.latestSnapshot = await readPageSnapshot(
+      registry,
+      snapshotExpandRefIds.size > 0
+        ? { expandChildrenRefs: Array.from(snapshotExpandRefIds), expandedChildrenLimit: 120 }
+        : undefined,
+    );
     recordSnapshotStats(pageContext.latestSnapshot);
+  };
+
+  /**
+   * 解析模型文本中的快照放宽指令（中）/ Parse snapshot expansion hint from model text (EN).
+   *
+   * 约定：
+   * SNAPSHOT_HINT: EXPAND_CHILDREN #ref1 #ref2
+   */
+  const parseSnapshotExpandHints = (text: string | undefined): string[] => {
+    if (!text) return [];
+    const refs: string[] = [];
+    const regex = /^\s*SNAPSHOT_HINT\s*:\s*EXPAND_CHILDREN\s+(.+)$/gim;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      const tail = match[1] ?? "";
+      const tokens = tail.match(/#[A-Za-z0-9_-]+/g) ?? [];
+      for (const token of tokens) {
+        refs.push(token.replace(/^#/, ""));
+      }
+    }
+    return refs;
+  };
+
+  /** 从工具输入提取 hash selector（如 #1rv01x），用于定向快照放宽。 */
+  const extractHashSelectorRef = (toolInput: unknown): string | null => {
+    if (!toolInput || typeof toolInput !== "object") return null;
+    const selector = (toolInput as { selector?: unknown }).selector;
+    if (typeof selector !== "string") return null;
+    const m = selector.trim().match(/^#([A-Za-z0-9_-]+)$/);
+    return m ? m[1] : null;
   };
 
   if (pageContext.latestSnapshot) {
@@ -363,6 +399,10 @@ export async function executeAgentLoop(
     // 先解析协议，最终推进在本轮执行后统一决定。
     // Parse protocol first; final remaining update is decided after execution.
     const parsedInstructionState = deriveNextInstruction(response.text, remainingInstruction);
+    const snapshotHintRefs = parseSnapshotExpandHints(response.text);
+    for (const ref of snapshotHintRefs.slice(0, 8)) {
+      snapshotExpandRefIds.add(ref);
+    }
 
     // 没有工具调用：若处于找不到重试流程，先等待再重试；否则正常结束
     if (!response.toolCalls || response.toolCalls.length === 0) {
@@ -466,6 +506,13 @@ export async function executeAgentLoop(
     const executedTaskCalls: Array<{ name: string; input: unknown }> = [];
     const roundMissingTasks: MissingToolTask[] = [];
     for (const tc of response.toolCalls) {
+
+      // 自动策略：当 AI 对 hash 列表执行 scroll 时，默认下一轮对该节点放宽 children 截断。
+      // 这样即使模型未显式输出 SNAPSHOT_HINT，也能尽快拿到完整列表选项。
+      if (tc.name === "dom" && getToolAction(tc.input) === "scroll") {
+        const ref = extractHashSelectorRef(tc.input);
+        if (ref) snapshotExpandRefIds.add(ref);
+      }
 
       // 保护 1：冗余快照拦截
       const redundant = checkRedundantSnapshot(

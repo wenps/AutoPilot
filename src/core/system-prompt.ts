@@ -52,6 +52,8 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
       "- If an action will change DOM (open modal, navigate), stop after that action batch and continue next round with new snapshot.",
       "- Do NOT call page_info (snapshot/query/get_url/get_title). Snapshot is already provided every round.",
       "- For dropdown/select, use dom action=select_option (or fill on select).",
+      "- If a required list shows `... (N children omitted)` under a specific container, request focused expansion by outputting `SNAPSHOT_HINT: EXPAND_CHILDREN #<containerRef>`.",
+      "- After outputting snapshot expansion hint, wait for the next refreshed snapshot before further scrolling/clicking on that list.",
       "- Verification whitelist: do NOT use get_text/get_attr to verify input/select values unless the user explicitly asks for verification.",
       "- Stop rule: when the requested state is achieved, stop calling tools. If verification is requested, verify once and then return REMAINING: DONE (no repeated get_text/get_attr on the same target).",
       "- Do NOT interact with AutoPilot UI unless user explicitly asks.",
