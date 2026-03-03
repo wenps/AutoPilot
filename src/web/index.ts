@@ -71,7 +71,7 @@ export type WebAgentOptions = {
   client?: AIClient;
   /** API 认证 Token (GitHub PAT / OpenAI key / Anthropic key) */
   token?: string;
-  /** AI 提供商: "copilot" | "openai" | "anthropic"（默认 "copilot"） */
+  /** AI 提供商: "copilot" | "openai" | "anthropic" | "deepseek" | "doubao" | "qwen"（默认 "copilot"） */
   provider?: string;
   /** 模型名称（默认 "gpt-4o"） */
   model?: string;

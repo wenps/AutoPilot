@@ -11,6 +11,8 @@ export const PROVIDER_ENDPOINTS: Record<string, string> = {
   copilot: "https://models.inference.ai.azure.com",
   anthropic: "https://api.anthropic.com",
   deepseek: "https://api.deepseek.com",
+  doubao: "https://ark.cn-beijing.volces.com/api/v3",
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 };
 
 // ─── 共享工具函数 ───

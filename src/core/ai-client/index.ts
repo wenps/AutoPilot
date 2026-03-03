@@ -10,6 +10,8 @@ import { validateProvider } from "./constants.js";
 import { OpenAIClient } from "./openai.js";
 import { AnthropicClient } from "./anthropic.js";
 import { DeepSeekClient } from "./deepseek.js";
+import { DoubaoClient } from "./doubao.js";
+import { QwenClient } from "./qwen.js";
 
 // Re-export 类型，方便外部统一从 ai-client 导入
 export type { AIClient, AIChatResponse, AIMessage, AIToolCall } from "../types.js";
@@ -19,12 +21,14 @@ export { BaseAIClient, type BaseAIClientOptions, type ChatHandlerParams } from "
 export { OpenAIClient, parseOpenAIStream } from "./openai.js";
 export { AnthropicClient, parseAnthropicStream } from "./anthropic.js";
 export { DeepSeekClient } from "./deepseek.js";
+export { DoubaoClient } from "./doubao.js";
+export { QwenClient } from "./qwen.js";
 
 // ─── 公共类型定义 ───
 
 /** AI 客户端配置（中）/ AI client configuration (EN). */
 export type AIClientConfig = {
-  /** AI 提供商: "openai" | "copilot" | "anthropic" */
+  /** AI 提供商: "openai" | "copilot" | "anthropic" | "deepseek" | "doubao" | "qwen" */
   provider: string;
   /** 模型名称，如 "gpt-4o"、"claude-sonnet-4-20250514" */
   model: string;
@@ -72,13 +76,17 @@ export function createAIClient(config: AIClientConfig): AIClient {
     case "openai":
     case "copilot":
       return new OpenAIClient(config);
+    case "doubao":
+      return new DoubaoClient(config);
+    case "qwen":
+      return new QwenClient(config);
     case "anthropic":
       return new AnthropicClient(config);
     case "deepseek":
       return new DeepSeekClient(config);
     default:
       throw new Error(
-        `Unknown AI provider: ${config.provider}. Supported: openai, copilot, anthropic, deepseek`,
+        `Unknown AI provider: ${config.provider}. Supported: openai, copilot, anthropic, deepseek, doubao, qwen`,
       );
   }
 }
