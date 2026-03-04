@@ -380,11 +380,11 @@ agent.clearHistory();                       // 手动清空历史
 
 | 参数 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `maxDepth` | `number` | `8`（chat 首轮）/ `6`（page_info.snapshot） | DOM 最大遍历深度，超过该深度的子树不会输出 |
+| `maxDepth` | `number` | `8`（chat 首轮）/ `7`（page_info.snapshot） | DOM 最大遍历深度，超过该深度的子树不会输出 |
 | `viewportOnly` | `boolean` | `false`（chat 首轮）/ `true`（page_info.snapshot） | 是否仅保留与视口相交的元素 |
 | `pruneLayout` | `boolean` | `true` | 是否折叠无意义纯布局容器（div/span/section 等） |
-| `maxNodes` | `number` | `500`（chat 首轮）/ `220`（page_info.snapshot） | 快照最大节点输出数量，超出后停止遍历并追加截断提示 |
-| `maxChildren` | `number` | `30`（chat 首轮）/ `25`（page_info.snapshot） | 每个父节点最多保留的子元素数量 |
+| `maxNodes` | `number` | `500`（chat 首轮）/ `280`（page_info.snapshot） | 快照最大节点输出数量，超出后停止遍历并追加截断提示 |
+| `maxChildren` | `number` | `30`（chat 首轮）/ `32`（page_info.snapshot） | 每个父节点最多保留的子元素数量 |
 | `maxTextLength` | `number` | `40` | 单节点文本截断长度（字符数） |
 | `refStore` | `RefStore` | 自动创建 | hash ID 映射表（一般无需手动传入，WebAgent 自动管理） |
 
@@ -400,7 +400,7 @@ agent.clearHistory();                       // 手动清空历史
 
 - `page_info.snapshot` 会为命中事件追踪的元素输出 `listeners="click,input,..."`
 - 交互优先级识别会把运行时监听事件纳入判断（不仅依赖 `onclick/role` 等静态属性）
-- 智能剪枝会保留带事件绑定的容器，避免把委托交互入口错误折叠
+- 智能剪枝会优先保留“自身有事件绑定”的容器，并在中浅层对子树事件做受预算探测，尽量保留可操作链路
 
 边界说明：
 
@@ -442,6 +442,10 @@ agent.clearHistory();                       // 手动清空历史
 
 折叠规则：
 - 没有 `id`、没有语义标签（如 `main`/`nav`）、没有交互属性、没有直接文本的纯布局div/span
+- 浅层布局主干默认保留（避免页面主结构被过早折叠）
+- 自身有事件绑定（`on*` 或追踪到 listeners）的容器优先保留
+- 中浅层子树出现事件绑定时，在预算范围内尽量保留相关容器
+- `svg` 装饰节点与 `__SVG_SPRITE_NODE__` sprite 容器会被过滤，避免噪音吞掉节点预算
 - 子节点直接**提升**输出到父级位置
 - 当同一折叠容器提升出多个相邻节点时，用 `collapsed-group` 括号块标记它们的来源关联
 
@@ -465,7 +469,7 @@ agent.clearHistory();                       // 手动清空历史
 | --- | --- | --- | --- | --- | --- |
 | `chat()` 首轮 | 8 | false | 500 | 30 | 优先完整性，提供充足的页面上下文 |
 | `page_info.snapshot`（loop 内） | 8 | false | 500 | 30 | 与首轮对齐，保证一致性 |
-| `page_info.snapshot`（手动调用） | 6 | true | 220 | 25 | 较小体积，适合局部更新 |
+| `page_info.snapshot`（手动调用） | 7 | true | 280 | 32 | 略放宽额度，兼顾结构完整与可操作性 |
 
 ---
 

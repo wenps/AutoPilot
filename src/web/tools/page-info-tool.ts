@@ -20,7 +20,7 @@ import { getActiveRefStore } from "./dom-tool/index.js";
 
 /** 快照配置选项 */
 export type SnapshotOptions = {
-  /** 最大遍历深度（默认 6） */
+  /** 最大遍历深度（默认 7） */
   maxDepth?: number;
   /**
    * 视口裁剪：只保留与视口相交的元素（默认 true）。
@@ -40,9 +40,9 @@ export type SnapshotOptions = {
    * 大幅减少 token 消耗。dom-tool 通过 RefStore.get(id) 解析回 DOM 元素。
    */
   refStore?: RefStore;
-  /** 最大输出节点数（默认 220），超过后停止继续遍历。 */
+  /** 最大输出节点数（默认 280），超过后停止继续遍历。 */
   maxNodes?: number;
-  /** 每个父节点最多输出的子元素数（默认 25），超出部分会折叠。 */
+  /** 每个父节点最多输出的子元素数（默认 32），超出部分会折叠。 */
   maxChildren?: number;
   /** 文本截断长度（默认 40）。 */
   maxTextLength?: number;
@@ -151,11 +151,11 @@ export function generateSnapshot(
     ? { maxDepth: options }
     : options;
 
-  const maxDepth = opts.maxDepth ?? 6;
+  const maxDepth = opts.maxDepth ?? 7;
   const viewportOnly = opts.viewportOnly ?? true;
   const pruneLayout = opts.pruneLayout ?? true;
-  const maxNodes = opts.maxNodes ?? 220;
-  const maxChildren = opts.maxChildren ?? 25;
+  const maxNodes = opts.maxNodes ?? 280;
+  const maxChildren = opts.maxChildren ?? 32;
   const maxTextLength = opts.maxTextLength ?? 40;
   const expandOptionLists = opts.expandOptionLists ?? false;
   const expandedChildrenLimit = Math.min(
@@ -256,13 +256,41 @@ export function generateSnapshot(
   }
 
   /**
-   * 判断子树内是否存在绑定事件元素。
-   *
-   * 说明：
-   * - 该判定只用于“是否允许剪枝布局容器”。
-   * - 命中扫描预算上限时保守返回 true，避免误剪导致交互目标丢失。
+   * 轻量检测：当前容器浅层子树里是否出现事件绑定节点。
+   * 仅用于是否保留布局容器，预算受控避免再次吞掉整页层级。
    */
-  function hasBoundEventsInSubtree(el: Element, scanBudget = 180): boolean {
+  function hasBoundEventsInShallowSubtree(el: Element, scanBudget = 48, maxTreeDepth = 2): boolean {
+    const queue: Array<{ node: Element; depth: number }> = Array.from(el.children).map(node => ({ node, depth: 1 }));
+    let scanned = 0;
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) continue;
+
+      if (hasBoundEvents(current.node)) return true;
+
+      scanned += 1;
+      if (scanned >= scanBudget) return false;
+
+      if (current.depth >= maxTreeDepth) continue;
+      for (const child of Array.from(current.node.children)) {
+        queue.push({ node: child, depth: current.depth + 1 });
+      }
+    }
+
+    return false;
+  }
+
+  /** 判断文本是否具有语义信息（过滤纯符号/超短噪音）。 */
+  function isSemanticText(text: string): boolean {
+    const normalized = text.replace(/\s+/g, "").trim();
+    if (!normalized) return false;
+    if (normalized.length < 2) return false;
+    return /[\p{Script=Han}A-Za-z0-9]/u.test(normalized);
+  }
+
+  /** 在子树内查找语义文本（浅层限流，避免额外大开销）。 */
+  function hasSemanticTextInSubtree(el: Element, scanBudget = 180): boolean {
     const stack: Element[] = Array.from(el.children);
     let scanned = 0;
 
@@ -270,12 +298,19 @@ export function generateSnapshot(
       const current = stack.pop();
       if (!current) continue;
 
-      if (hasBoundEvents(current)) return true;
+      let directText = "";
+      for (let i = 0; i < current.childNodes.length; i++) {
+        const node = current.childNodes[i];
+        if (node.nodeType === Node.TEXT_NODE) {
+          const t = node.textContent?.trim();
+          if (t) directText += t + " ";
+        }
+      }
+
+      if (isSemanticText(directText.trim())) return true;
 
       scanned += 1;
-      if (scanned >= scanBudget) {
-        return true;
-      }
+      if (scanned >= scanBudget) return false;
 
       const children = Array.from(current.children);
       for (let i = children.length - 1; i >= 0; i--) {
@@ -294,19 +329,25 @@ export function generateSnapshot(
    * 3. 没有交互属性（href/role/aria-label/onclick 等）
    * 4. 没有直接文本内容
    */
-  function isEmptyLayoutContainer(el: Element, directText: string): boolean {
+  function isEmptyLayoutContainer(el: Element, directText: string, depth: number): boolean {
     if (!pruneLayout) return false;
+    // 保留布局主干：浅层结构不做折叠，避免业务区域被压扁到看不见。
+    if (depth <= 2) return false;
     if (!LAYOUT_TAGS.has(getTagKey(el))) return false;
     // 有 id 的元素可能是重要锚点
     if (el.getAttribute("id")) return false;
     // 有 role/aria-label 的元素有语义
     if (el.getAttribute("role") || el.getAttribute("aria-label")) return false;
-    // 自身绑定过事件的容器也可能是交互入口（如委托点击）
+    // 自身有事件绑定：优先保留（事件绑定本身就是高价值可操作信号）。
     if (hasBoundEvents(el)) return false;
+
+    // 浅层子树出现事件绑定：在中浅层结构中尽量保留，避免点击链路被折叠断裂。
+    if (depth <= 4 && hasBoundEventsInShallowSubtree(el)) return false;
+
+    // 兼顾语义文本：含语义文本的容器也应保留。
+    if (isSemanticText(directText) || hasSemanticTextInSubtree(el)) return false;
     // 有直接文本内容的元素有意义
     if (directText) return false;
-    // 子树中存在绑定事件时，保留容器结构，避免折叠后丢失交互语义链路
-    if (hasBoundEventsInSubtree(el)) return false;
     return true;
   }
 
@@ -486,7 +527,7 @@ export function generateSnapshot(
     // 无意义布局容器：默认不输出自身行，直接将子元素提升到当前层级。
     // 若提升后同层出现多个孩子（如 a 与 b(c) 折叠成 a 与 c），
     // 则输出括号分组块，显式保留这些节点的关联来源。
-    if (isEmptyLayoutContainer(el, directText)) {
+    if (isEmptyLayoutContainer(el, directText, depth)) {
       const allChildren = Array.from(el.children);
       const interactiveChildren = allChildren.filter(isInteractiveElement);
       const nonInteractiveChildren = allChildren.filter((child) => !isInteractiveElement(child));
@@ -633,7 +674,7 @@ export function createPageInfoTool(): ToolDefinition {
         Type.String({ description: "CSS selector for query_all action" }),
       ),
       maxDepth: Type.Optional(
-        Type.Number({ description: "Max depth for snapshot (default: 6)" }),
+        Type.Number({ description: "Max depth for snapshot (default: 7)" }),
       ),
       viewportOnly: Type.Optional(
         Type.Boolean({ description: "Only snapshot elements visible in viewport (default: true)" }),
@@ -642,10 +683,10 @@ export function createPageInfoTool(): ToolDefinition {
         Type.Boolean({ description: "Collapse empty layout containers like div/span (default: true)" }),
       ),
       maxNodes: Type.Optional(
-        Type.Number({ description: "Maximum nodes to include in snapshot (default: 220)" }),
+        Type.Number({ description: "Maximum nodes to include in snapshot (default: 280)" }),
       ),
       maxChildren: Type.Optional(
-        Type.Number({ description: "Maximum children per element (default: 25)" }),
+        Type.Number({ description: "Maximum children per element (default: 32)" }),
       ),
       maxTextLength: Type.Optional(
         Type.Number({ description: "Maximum text length per node (default: 40)" }),
@@ -694,11 +735,11 @@ export function createPageInfoTool(): ToolDefinition {
 
           case "snapshot": {
             // 生成 DOM 快照 — AI 理解当前页面结构的主要方式
-            const maxDepth = (params.maxDepth as number) ?? 6;
+            const maxDepth = (params.maxDepth as number) ?? 7;
             const viewportOnly = (params.viewportOnly as boolean) ?? true;
             const pruneLayout = (params.pruneLayout as boolean) ?? true;
-            const maxNodes = (params.maxNodes as number) ?? 220;
-            const maxChildren = (params.maxChildren as number) ?? 25;
+            const maxNodes = (params.maxNodes as number) ?? 280;
+            const maxChildren = (params.maxChildren as number) ?? 32;
             const maxTextLength = (params.maxTextLength as number) ?? 40;
             const expandOptionLists = (params.expandOptionLists as boolean) ?? false;
             const expandChildrenRefs = Array.isArray(params.expandChildrenRefs)

@@ -74,6 +74,12 @@ export async function readPageUrl(
  * - `pruneLayout=true` 时：无 id/无语义/无交互/无直接文本的布局容器会被“折叠”，
  *   子节点直接提升输出，减少无意义层级；当同一折叠容器提升出多个相邻节点时，
  *   快照会用括号分组块标记其关联来源（collapsed-group）。
+ * - 布局主干保留：浅层结构优先保留（避免页面主骨架被过早折叠导致业务区域缺失）。
+ * - 事件信号保留：节点自身存在事件绑定（inline/on* 或 addEventListener 追踪）时优先保留；
+ *   中浅层会做受预算约束的子树事件探测，尽量保留潜在可操作链路。
+ * - 语义文本保留：包含语义文本的容器优先保留，避免“有意义但非控件”信息被误删。
+ * - 噪音过滤：跳过 `svg` 等装饰节点及 `__SVG_SPRITE_NODE__` sprite 容器，
+ *   避免图标定义树挤占节点预算。
  * - `maxNodes`：全局节点预算，超限后停止继续遍历并追加 truncation 提示。
  * - `maxChildren`：每个父节点只保留前 N 个子元素，其余用 `... (n children omitted)` 汇总。
  * - `maxTextLength`：节点文本按长度截断，避免长段文案占满上下文。
