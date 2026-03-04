@@ -5,6 +5,7 @@
  *       表单项控件重定向、editable 穿透。
  */
 import { isElementVisible, isEditableElement } from "./actionability.js";
+import { getTrackedElementEvents } from "../../event-listener-tracker.js";
 
 // ─── retarget（参考 Playwright injectedScript.retarget） ───
 
@@ -87,6 +88,42 @@ export function resolvePointerActionTarget(el: Element): Element {
     ".el-switch__core, .el-checkbox__inner, .el-radio__inner, [role='switch'], [role='checkbox'], [role='radio']",
   );
   if (siblingProxy && isElementVisible(siblingProxy)) return siblingProxy;
+
+  return el;
+}
+
+/**
+ * 点击目标上卷：当命中文本/装饰子节点时，优先上卷到最近可点击祖先。
+ *
+ * 典型场景：
+ * - 列表项文本本身无 click，但父级容器（如 .g-pointer）有点击语义
+ * - 事件委托绑定在祖先，子节点点击命中不稳定
+ */
+export function resolveClickableAncestorTarget(el: Element): Element {
+  const isSelfClickable = (node: Element): boolean => {
+    if (node.matches("a, button, input, textarea, select, summary, [role=button], [role=link], [role=menuitem]")) {
+      return true;
+    }
+    if (node.hasAttribute("onclick")) return true;
+
+    const tabIndexAttr = node.getAttribute("tabindex");
+    if (tabIndexAttr !== null && tabIndexAttr !== "-1") return true;
+
+    const tracked = getTrackedElementEvents(node);
+    if (tracked.some(name => name === "click" || name === "pointerdown" || name === "mousedown")) {
+      return true;
+    }
+
+    return false;
+  };
+
+  if (isSelfClickable(el)) return el;
+
+  let ancestor: Element | null = el.parentElement;
+  for (let depth = 0; ancestor && depth < 6; depth++, ancestor = ancestor.parentElement) {
+    if (!isElementVisible(ancestor)) continue;
+    if (isSelfClickable(ancestor)) return ancestor;
+  }
 
   return el;
 }

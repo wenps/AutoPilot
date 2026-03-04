@@ -46,6 +46,7 @@ import {
   resolveCheckableTarget,
   resolvePointerActionTarget,
   resolveFormItemControlTarget,
+  resolveClickableAncestorTarget,
   resolveEditableTarget,
 } from "./resolve.js";
 import { findVisibleOptionByText, waitForDropdownPopup } from "./dropdown.js";
@@ -114,7 +115,7 @@ export function createDomTool(): ToolDefinition {
 
       const actionabilityTarget =
         action === "click" || action === "check" || action === "uncheck"
-          ? resolvePointerActionTarget(resolveFormItemControlTarget(el))
+          ? resolvePointerActionTarget(resolveClickableAncestorTarget(resolveFormItemControlTarget(el)))
           : el;
 
       try {
@@ -125,7 +126,11 @@ export function createDomTool(): ToolDefinition {
         switch (action) {
           // ─── click ───
           case "click": {
-            const target = resolvePointerActionTarget(resolveFormItemControlTarget(retarget(el, force ? "none" : "button-link")));
+            const target = resolvePointerActionTarget(
+              resolveClickableAncestorTarget(
+                resolveFormItemControlTarget(retarget(el, force ? "none" : "button-link")),
+              ),
+            );
             const clickCount = typeof params.clickCount === "number" ? params.clickCount : 1;
 
             // option 元素自动写回 select

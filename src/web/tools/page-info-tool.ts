@@ -189,7 +189,7 @@ export function generateSnapshot(
   const vpHeight = viewportOnly ? window.innerHeight : 0;
 
   const INTERACTIVE_ATTRS = [
-    "href", "type", "placeholder", "value", "name", "role", "aria-label",
+    "href", "type", "placeholder", "value", "name", "role", "tabindex", "aria-label",
     "aria-valuenow", "aria-valuemin", "aria-valuemax",
     "src", "alt", "title", "for", "action", "method",
   ];
@@ -239,6 +239,11 @@ export function generateSnapshot(
     // 零尺寸元素（如隐藏的 position:absolute 元素）也跳过
     if (rect.width === 0 && rect.height === 0) return false;
     return true;
+  }
+
+  /** 统一标签名键值（HTML/SVG 在不同环境可能大小写不一致）。 */
+  function getTagKey(el: Element): string {
+    return (el.tagName || "").toUpperCase();
   }
 
   /** 判断元素是否存在绑定事件（inline 或 addEventListener 追踪）。 */
@@ -291,7 +296,7 @@ export function generateSnapshot(
    */
   function isEmptyLayoutContainer(el: Element, directText: string): boolean {
     if (!pruneLayout) return false;
-    if (!LAYOUT_TAGS.has(el.tagName)) return false;
+    if (!LAYOUT_TAGS.has(getTagKey(el))) return false;
     // 有 id 的元素可能是重要锚点
     if (el.getAttribute("id")) return false;
     // 有 role/aria-label 的元素有语义
@@ -312,7 +317,7 @@ export function generateSnapshot(
   }
 
   function isInteractiveElement(el: Element): boolean {
-    if (INTERACTIVE_TAGS.has(el.tagName)) return true;
+    if (INTERACTIVE_TAGS.has(getTagKey(el))) return true;
     if (el.hasAttribute("onclick")) return true;
     if (el.hasAttribute("role")) return true;
     if (el.hasAttribute("tabindex")) return true;
@@ -363,7 +368,12 @@ export function generateSnapshot(
     }
 
     if (depth > maxDepth) return "";
-    if (SKIP_TAGS.has(el.tagName)) return "";
+
+    const tagKey = getTagKey(el);
+    if (SKIP_TAGS.has(tagKey)) return "";
+
+    // 跳过常见 SVG sprite 容器，避免装饰图标定义吞噬节点预算。
+    if (el.getAttribute("id") === "__SVG_SPRITE_NODE__") return "";
 
     // 跳过标记为 autopilot 内部 UI 的元素（避免 AI 操作自身界面）
     if (el.hasAttribute("data-autopilot-ignore")) return "";
