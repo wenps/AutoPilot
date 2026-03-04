@@ -512,4 +512,90 @@ describe("executeAgentLoop golden paths", () => {
     );
     expect(expandedSnapshotCall).toBeTruthy();
   });
+
+  it("轮次后双重等待：同轮多个动作仅触发一次等待屏障", async () => {
+    const waitExecute = vi.fn(async (params: Record<string, unknown>) => ({
+      content: `wait:${String(params.action)}`,
+    }));
+
+    const registry = createBaseRegistry({
+      domExecute: async () => ({ content: "dom ok" }),
+    });
+
+    registry.register({
+      name: "wait",
+      description: "wait tool",
+      schema: Type.Object({ action: Type.String() }),
+      execute: waitExecute,
+    });
+
+    const client = new ScriptedClient([
+      {
+        text: "REMAINING: 继续",
+        toolCalls: [
+          { id: "1", name: "dom", input: { action: "fill", selector: "#a", value: "1" } },
+          { id: "2", name: "dom", input: { action: "click", selector: "#submit" } },
+        ],
+      },
+      { text: "完成\nREMAINING: DONE" },
+    ]);
+
+    await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "填写并提交",
+      maxRounds: 4,
+    });
+
+    const waitActions = waitExecute.mock.calls.map(call => String((call[0] as Record<string, unknown>).action));
+    expect(waitActions).toEqual(["wait_for_selector", "wait_for_stable"]);
+    expect(waitExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it("轮次后稳定等待：自定义 loadingSelectors 与默认值合并而非覆盖", async () => {
+    const waitExecute = vi.fn(async (params: Record<string, unknown>) => ({
+      content: `wait:${String(params.action)}`,
+    }));
+
+    const registry = createBaseRegistry({
+      domExecute: async () => ({ content: "dom ok" }),
+    });
+
+    registry.register({
+      name: "wait",
+      description: "wait tool",
+      schema: Type.Object({ action: Type.String() }),
+      execute: waitExecute,
+    });
+
+    const client = new ScriptedClient([
+      {
+        text: "REMAINING: 继续",
+        toolCalls: [{ id: "1", name: "dom", input: { action: "click", selector: "#submit" } }],
+      },
+      { text: "完成\nREMAINING: DONE" },
+    ]);
+
+    await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "点击提交",
+      maxRounds: 4,
+      roundStabilityWait: {
+        loadingSelectors: [".custom-loading", " .custom-loading "],
+      },
+    });
+
+    const waitForSelectorCall = waitExecute.mock.calls.find(call =>
+      String((call[0] as Record<string, unknown>).action) === "wait_for_selector"
+    );
+    expect(waitForSelectorCall).toBeTruthy();
+
+    const selectorArg = String((waitForSelectorCall?.[0] as Record<string, unknown>).selector ?? "");
+    expect(selectorArg).toContain(".ant-spin");
+    expect(selectorArg).toContain(".custom-loading");
+    expect(selectorArg.match(/\.custom-loading/g)?.length).toBe(1);
+  });
 });

@@ -21,7 +21,7 @@ import type { RefStore } from "../ref-store.js";
 
 // ─── 常量 ───
 
-const DEFAULT_WAIT_MS = 2000;
+const DEFAULT_WAIT_MS = 1200;
 
 /** scrollIntoView 轮换策略（参考 Playwright dom.ts） */
 const SCROLL_OPTIONS: (ScrollIntoViewOptions | undefined)[] = [
@@ -560,7 +560,7 @@ export function createDomTool(): ToolDefinition {
       deltaY: Type.Optional(Type.Number({ description: "Vertical scroll delta for scroll action. Positive = down, negative = up." })),
       deltaX: Type.Optional(Type.Number({ description: "Horizontal scroll delta for scroll action." })),
       steps: Type.Optional(Type.Number({ description: "Repeat count for scroll action (default 1, max 20)." })),
-      waitMs: Type.Optional(Type.Number({ description: "Wait timeout in ms before action (default: 2000)." })),
+      waitMs: Type.Optional(Type.Number({ description: "Wait timeout in ms before action (default: 1200)." })),
       waitSeconds: Type.Optional(Type.Number({ description: "Wait timeout in seconds (fallback for waitMs)." })),
       force: Type.Optional(Type.Boolean({ description: "Skip actionability checks (default false)." })),
     }),

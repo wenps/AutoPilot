@@ -15,7 +15,7 @@ import { Type } from "@sinclair/typebox";
 import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js";
 import { getActiveRefStore } from "./dom-tool.js";
 
-const DEFAULT_TIMEOUT = 10_000;
+const DEFAULT_TIMEOUT = 6_000;
 const POLL_INTERVAL_MS = 80;
 const STABLE_TICK_MS = 50;
 const OBSERVER_OPTIONS: MutationObserverInit = {
@@ -239,7 +239,7 @@ export function createWaitTool(): ToolDefinition {
         Type.String({ description: "Text to wait for in wait_for_text" }),
       ),
       timeout: Type.Optional(
-        Type.Number({ description: "Timeout in milliseconds (default: 10000)" }),
+        Type.Number({ description: "Timeout in milliseconds (default: 6000)" }),
       ),
       quietMs: Type.Optional(
         Type.Number({ description: "Quiet window for wait_for_stable in milliseconds (default: 300)" }),

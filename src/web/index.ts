@@ -31,6 +31,7 @@ import {
   executeAgentLoop,
   type AgentLoopCallbacks,
   type AgentLoopResult,
+  type RoundStabilityWaitOptions,
   wrapSnapshot,
 } from "../core/agent-loop/index.js";
 import type { AIMessage } from "../core/types.js";
@@ -95,6 +96,8 @@ export type WebAgentOptions = {
   autoSnapshot?: boolean;
   /** 快照选项（视口裁剪、智能剪枝等，autoSnapshot 开启时生效） */
   snapshotOptions?: SnapshotOptions;
+  /** 轮次后稳定等待（加载态 + DOM 静默）配置 */
+  roundStabilityWait?: RoundStabilityWaitOptions;
 };
 
 // ─── WebAgent 类 ───
@@ -127,6 +130,8 @@ export class WebAgent {
   private autoSnapshot: boolean;
   /** 快照选项 */
   private snapshotOptions: SnapshotOptions;
+  /** 轮次后稳定等待配置 */
+  private roundStabilityWait?: RoundStabilityWaitOptions;
 
   /** 工具注册表实例 — 每个 WebAgent 拥有独立的工具集 */
   private registry = new ToolRegistry();
@@ -146,6 +151,7 @@ export class WebAgent {
     this.memory = options.memory ?? false;
     this.autoSnapshot = options.autoSnapshot ?? true;
     this.snapshotOptions = options.snapshotOptions ?? {};
+    this.roundStabilityWait = options.roundStabilityWait;
 
     if (typeof options.systemPrompt === "string") {
       this.setSystemPrompt(options.systemPrompt);
@@ -420,6 +426,7 @@ export class WebAgent {
       history: this.memory ? this.history : undefined,
       dryRun: this.dryRun,
       maxRounds: this.maxRounds,
+      roundStabilityWait: this.roundStabilityWait,
       callbacks: wrappedCallbacks,
     });
 

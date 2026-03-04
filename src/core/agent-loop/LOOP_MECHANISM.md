@@ -88,6 +88,10 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 ### 阶段 F：空转检查 + 刷新快照
 
 - 连续只读轮次触发停机（防空转）
+- 若本轮存在潜在 DOM 变化动作，先执行“轮次后稳定等待”：
+  - 等待 loading 指示器隐藏（可配置选择器，默认覆盖 AntD / Element Plus / BK / TDesign（TD）/ aria-busy / skeleton）
+  - 等待 DOM quiet window（默认 200ms）
+  - 总超时默认 4000ms，超时后不阻塞收敛
 - 刷新快照进入下一轮
 
 ---
@@ -140,6 +144,16 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 ### 5.6 重复批次防自转
 
 - 连续返回相同任务批次且无错误时提前停机
+
+### 5.7 操作稳定性（轮次后双重等待）
+
+- 触发条件：本轮出现潜在 DOM 变化动作（例如 `dom.click/fill/select_option/scroll/press`、`navigate.*`、`evaluate`）且动作无错误。
+- 执行顺序固定：
+  1. `wait.wait_for_selector(state=hidden)` 等待 loading 指示器消失
+  2. `wait.wait_for_stable` 等待 DOM 进入 quiet window
+- 默认参数：`timeoutMs=4000`、`quietMs=200`。
+- 选择器语义：`roundStabilityWait.loadingSelectors` 与默认列表合并去重，不覆盖默认值。
+- 设计目的：在保证收敛性的同时，减少“页面尚未稳定即继续操作”导致的误点与空转。
 
 ---
 

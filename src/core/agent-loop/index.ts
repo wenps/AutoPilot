@@ -42,6 +42,9 @@ import {
   DEFAULT_MAX_ROUNDS,
   DEFAULT_NOT_FOUND_RETRY_ROUNDS,
   DEFAULT_NOT_FOUND_RETRY_WAIT_MS,
+  DEFAULT_ROUND_STABILITY_WAIT_LOADING_SELECTORS,
+  DEFAULT_ROUND_STABILITY_WAIT_QUIET_MS,
+  DEFAULT_ROUND_STABILITY_WAIT_TIMEOUT_MS,
 } from "./constants.js";
 import {
   buildTaskArray,
@@ -53,8 +56,10 @@ import {
   parseSnapshotExpandHints,
   reduceRemainingHeuristically,
   shouldForceRoundBreak,
+  isPotentialDomMutation,
   sleep,
   toContentString,
+  hasToolError,
 } from "./helpers.js";
 import { readPageSnapshot, stripSnapshotFromPrompt } from "./snapshot.js";
 import { buildCompactMessages } from "./messages.js";
@@ -115,6 +120,7 @@ export async function executeAgentLoop(
     history,
     dryRun = false,
     maxRounds = DEFAULT_MAX_ROUNDS,
+    roundStabilityWait,
     callbacks,
   } = params;
 
@@ -152,6 +158,21 @@ export async function executeAgentLoop(
   let lastRoundHadError = false;
   let protocolViolationHint: string | undefined;
   const snapshotExpandRefIds = new Set<string>();
+  const effectiveRoundStabilityWait = {
+    enabled: roundStabilityWait?.enabled ?? true,
+    timeoutMs: Math.max(200, Math.floor(roundStabilityWait?.timeoutMs ?? DEFAULT_ROUND_STABILITY_WAIT_TIMEOUT_MS)),
+    quietMs: Math.max(50, Math.floor(roundStabilityWait?.quietMs ?? DEFAULT_ROUND_STABILITY_WAIT_QUIET_MS)),
+    loadingSelectors: [
+      ...new Set(
+        [
+          ...DEFAULT_ROUND_STABILITY_WAIT_LOADING_SELECTORS,
+          ...(roundStabilityWait?.loadingSelectors ?? []),
+        ]
+          .map(selector => selector.trim())
+          .filter(Boolean),
+      ),
+    ],
+  };
   // 恢复与拦截统计
   let recoveryCount = 0;
   let redundantInterceptCount = 0;
@@ -201,6 +222,36 @@ export async function executeAgentLoop(
         : undefined,
     );
     recordSnapshotStats(pageContext.latestSnapshot);
+  };
+
+  /**
+   * 轮次后稳定等待（双重等待）。
+   *
+   * 顺序固定为：
+   * 1) 等待 loading 指示器隐藏
+   * 2) 等待 DOM quiet window
+   */
+  const runRoundStabilityBarrier = async (): Promise<void> => {
+    if (!effectiveRoundStabilityWait.enabled) return;
+    if (!registry.has("wait")) return;
+
+    const timeout = effectiveRoundStabilityWait.timeoutMs;
+    const loadingSelector = effectiveRoundStabilityWait.loadingSelectors.join(", ");
+
+    if (loadingSelector) {
+      await registry.dispatch("wait", {
+        action: "wait_for_selector",
+        selector: loadingSelector,
+        state: "hidden",
+        timeout,
+      });
+    }
+
+    await registry.dispatch("wait", {
+      action: "wait_for_stable",
+      timeout,
+      quietMs: effectiveRoundStabilityWait.quietMs,
+    });
   };
 
 
@@ -383,6 +434,7 @@ export async function executeAgentLoop(
     // 批量执行所有工具调用
     // roundHasError 用于控制“重复批次停机”：上一轮有错误时，不应武断终止。
     let roundHasError = false;
+    let roundHasPotentialDomMutation = false;
     const executedTaskCalls: Array<{ name: string; input: unknown }> = [];
     const roundMissingTasks: MissingToolTask[] = [];
     for (const tc of response.toolCalls) {
@@ -442,6 +494,9 @@ export async function executeAgentLoop(
       if (result.details && typeof result.details === "object") {
         roundHasError = roundHasError || Boolean((result.details as { error?: unknown }).error);
       }
+      if (!hasToolError(result) && isPotentialDomMutation(tc.name, tc.input)) {
+        roundHasPotentialDomMutation = true;
+      }
 
       // 捕获显式 snapshot 结果
       if (tc.name === "page_info" && getToolAction(tc.input) === "snapshot") {
@@ -500,6 +555,10 @@ export async function executeAgentLoop(
     }
     consecutiveReadOnlyRounds = idleResult;
 
+    if (roundHasPotentialDomMutation) {
+      await runRoundStabilityBarrier();
+    }
+
     // ═══ 阶段 5：刷新快照（供下一轮使用）═══
     await refreshSnapshot();
   }
@@ -544,4 +603,10 @@ export async function executeAgentLoop(
 
 // ─── Re-exports（维持外部 API 不变）───
 export { wrapSnapshot } from "./snapshot.js";
-export type { AgentLoopParams, AgentLoopResult, AgentLoopCallbacks, AgentLoopMetrics } from "./types.js";
+export type {
+  AgentLoopParams,
+  AgentLoopResult,
+  AgentLoopCallbacks,
+  AgentLoopMetrics,
+  RoundStabilityWaitOptions,
+} from "./types.js";

@@ -7,6 +7,18 @@
 import type { AIMessage } from "../types.js";
 import type { ToolCallResult } from "../tool-registry.js";
 
+/** 轮次后稳定等待配置（加载态 + DOM 静默） */
+export type RoundStabilityWaitOptions = {
+  /** 是否启用轮次后稳定等待（默认 true） */
+  enabled?: boolean;
+  /** 双重等待总超时（毫秒，默认 4000） */
+  timeoutMs?: number;
+  /** DOM 静默窗口（毫秒，默认 200） */
+  quietMs?: number;
+  /** 页面加载态选择器列表（会与默认列表合并去重，不会覆盖默认值） */
+  loadingSelectors?: string[];
+};
+
 export type AgentLoopMetrics = {
   roundCount: number;
   totalToolCalls: number;
@@ -67,6 +79,8 @@ export type AgentLoopParams = {
   dryRun?: boolean;
   /** 最大工具调用轮次（默认 40） */
   maxRounds?: number;
+  /** 轮次后稳定等待（加载态 + DOM 静默）配置 */
+  roundStabilityWait?: RoundStabilityWaitOptions;
   /** 事件回调 */
   callbacks?: AgentLoopCallbacks;
 };

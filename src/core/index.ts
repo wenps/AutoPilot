@@ -101,6 +101,8 @@ export {
   type AgentLoopCallbacks,
   /** Agent 循环指标类型 / Agent loop metrics type. */
   type AgentLoopMetrics,
+  /** 轮次后稳定等待配置类型 / Round-level stability barrier config type. */
+  type RoundStabilityWaitOptions,
   /** 包裹快照边界文本 / Wrap snapshot with boundary markers. */
   wrapSnapshot,
 } from "./agent-loop/index.js";

@@ -98,10 +98,10 @@
 
 > **为什么提升**：B 端页面异步加载极其频繁，不等加载完就操作 = 必然失败。
 
-- [ ] **加载态自动等待** — 每次工具执行前/后自动检测
-	- [ ] 支持 `.ant-spin`、`.el-loading`、`[aria-busy="true"]`、`.skeleton`、`.loading`
-	- [ ] 支持用户通过 `snapshotOptions.loadingSelectors` 配置自定义加载指示器
-	- [ ] 超时上限（默认 8s），防止页面持续 loading 时无限卡住
+- [x] **加载态自动等待（已落地）** — 在“本轮存在潜在 DOM 变化动作”后执行轮次后稳定等待
+	- [x] 默认支持 AntD / Element Plus / BK / TDesign（TD）及通用 loading 选择器
+	- [x] 支持用户通过 `roundStabilityWait.loadingSelectors` 追加配置（与默认值合并去重，不覆盖默认）
+	- [x] 超时上限默认 4s（`roundStabilityWait.timeoutMs=4000`），避免页面持续 loading 时无限卡住
 - [ ] **网络空闲检测** — Hook fetch / XMLHttpRequest，追踪 pending 请求数
 	- [ ] 新增 `wait.wait_for_network_idle` action
 	- [ ] 默认等待 pending 归零后 300ms 稳定期
@@ -182,8 +182,9 @@
 
 ### 12. DOM 稳定等待
 
-- [ ] 执行操作前使用 debounced MutationObserver 等待 DOM 无变化（默认 300ms）
-- [ ] 与加载态检测联动：loading 消失 + DOM 稳定后才执行下一步
+- [x] 轮次后使用 `wait_for_stable`（MutationObserver）等待 DOM 无变化（默认 `quietMs=200`）
+- [x] 与加载态检测联动：先 loading 消失，再进入 DOM quiet window
+- [ ] 执行操作前稳定等待（pre-action）策略仍待评估（当前为 post-round barrier）
 - [ ] 验收：动态渲染页面操作成功率提升
 
 ### 13. 上下文窗口化压缩

@@ -213,6 +213,39 @@ export function shouldForceRoundBreak(toolName: string, toolInput: unknown): boo
 }
 
 /**
+ * 判定动作是否可能引发页面结构或状态变化。
+ *
+ * 用于“轮次后稳定等待”触发条件：
+ * - 命中 true：本轮结束后执行加载态 + DOM 静默双重等待
+ * - 命中 false：跳过等待，直接进入下一轮
+ */
+export function isPotentialDomMutation(toolName: string, toolInput: unknown): boolean {
+  const action = getToolAction(toolInput);
+
+  if (toolName === "navigate") return true;
+  if (toolName === "evaluate") return true;
+  if (toolName !== "dom") return false;
+
+  if (!action) return false;
+  return [
+    "click",
+    "fill",
+    "select_option",
+    "clear",
+    "check",
+    "uncheck",
+    "type",
+    "focus",
+    "hover",
+    "scroll",
+    "press",
+    "set_attr",
+    "add_class",
+    "remove_class",
+  ].includes(action);
+}
+
+/**
  * 采集找不到元素任务。
  *
  * 返回 null 表示当前结果不属于“元素未找到”，

@@ -40,6 +40,8 @@ src/
 │       ├── openai.ts
 │       ├── anthropic.ts
 │       ├── deepseek.ts
+│       ├── doubao.ts
+│       ├── qwen.ts
 │       └── sse.ts
 └── web/
   ├── index.ts
@@ -120,6 +122,8 @@ src/
 
 补充（当前实现）：
 - 对可能引发 DOM 结构变化的动作（如 `dom.click` / `dom.press`、`navigate.*`、`evaluate`）执行后可强制断轮，等待下一轮新快照。
+- 轮次结束时（仅当本轮出现潜在 DOM 变化动作且启用配置）会执行“加载态 + DOM 稳定”双重等待：先等待 loading 指示器隐藏，再等待 DOM 静默窗口（默认 200ms，超时默认 4s）。
+- loading 选择器默认覆盖 AntD / Element Plus / BK / TDesign（TD）及通用加载态；用户自定义 `roundStabilityWait.loadingSelectors` 采用“追加合并 + 去重”，不会覆盖默认值。
 
 ### 4.3 快照优先级
 
@@ -186,8 +190,11 @@ src/
 - `openai.ts`：OpenAI/Copilot 协议
 - `anthropic.ts`：Anthropic 协议
 - `deepseek.ts`：DeepSeek 协议
+- `doubao.ts`：豆包（Ark）OpenAI 兼容协议
+- `qwen.ts`：通义千问（DashScope）OpenAI 兼容协议
 - `sse.ts`：SSE 统一消费器
 - `custom.ts`：BaseAIClient 抽象封装
+- `constants.ts`：provider 默认端点与共享校验逻辑
 
 ### web
 
@@ -216,13 +223,13 @@ src/
 4. 空转检测
 - 连续只读/无实质推进时终止循环，防止无限迭代
 
-6. 协议修复回合
-- 当“remaining 未完成 + 无工具调用”出现时，不直接结束
-- 下一轮注入 protocol violation 提示，要求“要么工具调用推进，要么严格 `REMAINING: DONE`”
-
 5. 重复批次防自转
 - 若连续两轮返回完全相同的任务批次且上一轮无错误，直接终止本次请求
 - 目标：避免“看起来已完成但循环不停”的重复调用
+
+6. 协议修复回合
+- 当“remaining 未完成 + 无工具调用”出现时，不直接结束
+- 下一轮注入 protocol violation 提示，要求“要么工具调用推进，要么严格 `REMAINING: DONE`”
 
 ## 7. 变更策略（高优先级）
 
@@ -275,12 +282,21 @@ pnpm build
 
 ## 11. 注释与提示词语言规范
 
-- 函数级注释（JSDoc）统一使用中英双语：
-  - 第一行写“中文说明 / English summary”
-  - 关键行为、约束、返回值至少给出中英对照
+- 函数级注释（JSDoc）以中文为主：
+  - 优先保证中文说明清晰、可维护
+  - 对外暴露 API、跨模块边界、易歧义逻辑可补充英文摘要
 - 对外 Prompt 正文统一英文：
   - 发送给模型的 system/user 指令文本必须是英文
   - 中文仅用于源码注释，不应进入 prompt payload
 - 改动规则：
-  - 修改函数逻辑时，同步更新该函数的中英双语注释
-  - 新增 core 模块导出函数时，默认要求中英双语注释
+  - 修改函数逻辑时，同步更新该函数注释，确保描述与行为一致
+  - 新增 core 模块导出函数时，至少提供清晰中文注释；必要时补充英文
+
+## 12. Provider 变更一致性（新增）
+
+- 新增或调整 provider 时，至少同步以下文件：
+  - `src/core/ai-client/index.ts`（provider 路由）
+  - `src/core/ai-client/constants.ts`（默认端点）
+  - `src/web/index.ts`（WebAgentOptions 注释/提示）
+  - `README.md`（对外配置示例与支持矩阵）
+- 若 provider 协议走 OpenAI 兼容层，优先复用 `OpenAIClient`，避免复制请求/流解析逻辑。
