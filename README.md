@@ -145,8 +145,8 @@ import { WebAgent } from "agentpage";
 
 const agent = new WebAgent({
   token: "your-api-key",
-  provider: "deepseek", // openai | copilot | anthropic | deepseek
-  model: "deepseek-chat",
+  provider: "doubao", // openai | copilot | anthropic | deepseek | doubao | qwen
+  model: "doubao-1.5-pro-32k",
   // 用户可自定义 Prompt 规则（项目级/路由级）
   systemPrompt: "You are an assistant for this route. Follow route safety constraints.",
   memory: true,
@@ -227,9 +227,9 @@ applyRouteSkill(location.pathname);
 | 参数 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `client` | `AIClient` | - | 自定义 AI 客户端；传入后优先使用该实例，忽略 token/provider/model/baseURL |
-| `token` | `string` | `""` | API Token（GitHub PAT / OpenAI API Key / Anthropic Key / DeepSeek Key） |
-| `provider` | `string` | `"copilot"` | AI 服务商：`copilot` / `openai` / `anthropic` / `deepseek` |
-| `model` | `string` | `"gpt-4o"` | 模型名称（需与 provider 匹配，如 `deepseek-chat`、`claude-sonnet-4-20250514`） |
+| `token` | `string` | `""` | API Token（GitHub PAT / OpenAI API Key / Anthropic Key / DeepSeek Key / Doubao Ark Key / DashScope Key） |
+| `provider` | `string` | `"copilot"` | AI 服务商：`copilot` / `openai` / `anthropic` / `deepseek` / `doubao` / `qwen` |
+| `model` | `string` | `"gpt-4o"` | 模型名称（需与 provider 匹配，如 `doubao-1.5-pro-32k`、`qwen-plus`、`deepseek-chat`） |
 | `baseURL` | `string` | - | 自定义 API 基础地址（用于代理/私有部署，覆盖 provider 默认端点） |
 | `stream` | `boolean` | `true` | 是否启用流式返回（SSE）；关闭后使用 JSON 非流式响应 |
 | `dryRun` | `boolean` | `false` | 干运行模式：仅输出 AI 计划调用的工具列表，不执行真实操作 |
@@ -282,6 +282,8 @@ type AIClient = {
 | `openai` | `https://api.openai.com/v1` | `gpt-4o` / `gpt-4o-mini` | 标准 OpenAI 接口 |
 | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-20250514` | Anthropic 原生接口 |
 | `deepseek` | `https://api.deepseek.com` | `deepseek-chat` | DeepSeek 接口 |
+| `doubao` | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-1.5-pro-32k` | 火山引擎 Ark（OpenAI 兼容） |
+| `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | 阿里云百炼兼容模式（OpenAI 兼容） |
 
 #### `systemPrompt`（Prompt 注册与维护）
 

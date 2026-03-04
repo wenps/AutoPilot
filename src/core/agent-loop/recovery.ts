@@ -1,8 +1,17 @@
 /**
- * 保护与恢复机制（中）/ Protection and recovery mechanisms (EN).
+ * 保护与恢复机制。
  *
- * 确保单次失败不打断主循环。
- * Keeps the main loop resilient to single-step failures.
+ * 这个文件负责给 Agent Loop 提供“防失败、防空转、防重复”的保护链。
+ * 目标是：即使某一步失败，也尽量让循环继续推进，而不是直接崩掉。
+ *
+ * 主要能力：
+ * 1) 冗余拦截：拦住无意义的 `page_info.*` 调用
+ * 2) 快照防抖：连续 snapshot 触发时给出警告并限制空转
+ * 3) 找不到元素恢复：自动等待 + 刷新快照 + 重试上限
+ * 4) 导航后刷新：导航成功后立刻更新快照上下文
+ * 5) 空转检测：连续只读轮次触发停机信号
+ *
+ * 一句话：这里是主循环的“保险丝层”。
  */
 import type { ToolCallResult } from "../tool-registry.js";
 import type { AgentLoopCallbacks } from "./types.js";
@@ -22,11 +31,18 @@ import type { PageContextState } from "./types.js";
 
 // ─── 冗余 page_info 拦截 ───
 
-/** 冗余 page_info 动作（中）/ Redundant page_info actions to intercept (EN). */
+/** 冗余 page_info 动作集合。 */
 const REDUNDANT_PAGE_INFO_ACTIONS = new Set(["snapshot", "query_all", "get_url", "get_title", "get_viewport"]);
 
 /**
- * 冗余 page_info 检查（中）/ Check whether page_info call is redundant (EN).
+ * 冗余 page_info 检查。
+ *
+ * 场景：模型在 loop 中频繁请求 page_info，导致“只看不做”。
+ * 处理：命中白名单动作时直接返回拦截结果，不真正执行工具。
+ *
+ * 示例：
+ * - 输入：`page_info.snapshot`
+ * - 输出：`REDUNDANT_PAGE_INFO_SKIPPED`
  */
 export function checkRedundantSnapshot(
   toolName: string,
@@ -52,7 +68,14 @@ export function checkRedundantSnapshot(
 }
 
 /**
- * 快照防抖（中）/ Debounce repeated snapshot calls (EN).
+ * 快照防抖。
+ *
+ * 规则：连续触发 `page_info.snapshot` 时，第 2 次起标记为冗余，
+ * 返回 `REDUNDANT_SNAPSHOT`，提醒模型直接使用已有快照继续执行。
+ *
+ * 返回值：
+ * - `result`：可能被替换成防抖后的结果
+ * - `consecutiveCount`：更新后的连续 snapshot 计数
  */
 export function applySnapshotDebounce(
   toolName: string,
@@ -87,10 +110,18 @@ export function applySnapshotDebounce(
 // ─── 元素未找到自动恢复 ───
 
 /**
- * 元素未找到恢复（中）/ Recover from element-not-found failures (EN).
+ * 元素未找到恢复。
  *
- * 前两次自动恢复，超过上限后返回终止提示。
- * Auto-recovers for initial attempts, then returns max-recovery signal.
+ * 触发条件：
+ * - 工具是 `dom`
+ * - 结果被识别为“元素未找到”
+ *
+ * 处理流程：
+ * 1) 按调用键统计恢复次数（同 name + input 视为同一调用）
+ * 2) 在上限内：等待 -> 刷新快照 -> 返回 `ELEMENT_NOT_FOUND_RECOVERY`
+ * 3) 超过上限：返回 `ELEMENT_NOT_FOUND_MAX_RECOVERY_REACHED`
+ *
+ * 说明：函数只返回“恢复后的结果描述”，是否继续下一轮由主循环决定。
  */
 export async function handleElementRecovery(
   toolName: string,
@@ -145,7 +176,12 @@ export async function handleElementRecovery(
 
 // ─── 导航后 URL 变化检测 ───
 
-/** 导航后快照刷新（中）/ Refresh snapshot after navigation actions (EN). */
+/**
+ * 导航后快照刷新。
+ *
+ * 当 `navigate.goto/back/forward/reload` 成功后，立即刷新快照，
+ * 防止后续动作还在旧页面上下文里决策。
+ */
 export async function handleNavigationUrlChange(
   toolName: string,
   toolInput: unknown,
@@ -176,7 +212,15 @@ const READ_ONLY_DOM_ACTIONS = new Set(["get_text", "get_attr"]);
 
 /**
  * 空转检测：识别连续只读轮次并终止。
- * 返回 -1 表示应终止循环。
+ *
+ * 判定口径：
+ * - `page_info.*` 视为只读
+ * - `dom.get_text/get_attr` 视为只读
+ *
+ * 返回值语义：
+ * - `-1`：触发停机（连续 2 轮纯只读）
+ * - `0`：本轮有实质操作，计数清零
+ * - `>0`：当前连续只读轮次
  */
 export function detectIdleLoop(
   toolCalls: Array<{ name: string; input: unknown }>,

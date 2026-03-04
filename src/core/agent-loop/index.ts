@@ -1,21 +1,42 @@
 /**
- * Agent Loop 主流程
- *
- * 负责消息构建、AI 决策、工具执行、恢复保护与指标汇总。
- * 
+ * Agent Loop 主流程（口语版）
  *
  * 流程图（文本）：
  *
  *   轮次开始
  *      │
- *      ├─ 确保快照可用
- *      ├─ 构建紧凑消息（目标 + 剩余任务 + 执行轨迹 + 快照）
- *      ├─ 调用模型
- *      ├─ 无 toolCalls ? 结束 : 执行工具
- *      ├─ 应用保护机制（冗余拦截/恢复/导航检测/空转/防自转）
+ *      ├─ 先看有没有最新快照
+ *      │    └─ 没有就先拍一张（可带 expandChildrenRefs）
+ *      │
+ *      ├─ 组装本轮上下文消息
+ *      │    └─ remaining + 上轮任务 + 最新快照 +（必要时）重试提示
+ *      │
+ *      ├─ 调用模型拿决策
+ *      │    └─ 同时解析 `REMAINING` 和 `SNAPSHOT_HINT`
+ *      │
+ *      ├─ 有 toolCalls 吗？
+ *      │    ├─ 没有：走收敛/协议修复判断（必要时等待后重试）
+ *      │    └─ 有：逐个执行工具
+ *      │         ├─ 冗余拦截（例如 page_info 空转）
+ *      │         ├─ 失败恢复（元素未找到重试）
+ *      │         ├─ 导航后更新快照
+ *      │         └─ 命中断轮条件则提前结束本轮
+ *      │
+ *      ├─ 更新 remaining（优先协议，缺失时启发式剔除）
+ *      │
+ *      ├─ 防空转 / 防自转检查
+ *      │    └─ 连续只读或重复批次会触发停机
+ *      │
  *      ├─ 刷新快照
  *      ▼
  *   下一轮或停机
+ *
+ * 停机条件（任一命中）：
+ * - `REMAINING: DONE`（或 remaining 为空）
+ * - 协议修复后仍无推进
+ * - 连续只读（空转）
+ * - 重复批次（自转）
+ * - 达到 maxRounds
  */
 import {
   DEFAULT_MAX_ROUNDS,
@@ -23,8 +44,15 @@ import {
   DEFAULT_NOT_FOUND_RETRY_WAIT_MS,
 } from "./constants.js";
 import {
+  buildTaskArray,
+  collectMissingTask,
+  deriveNextInstruction,
+  extractHashSelectorRef,
   getToolAction,
-  isElementNotFoundResult,
+  normalizeModelOutput,
+  parseSnapshotExpandHints,
+  reduceRemainingHeuristically,
+  shouldForceRoundBreak,
   sleep,
   toContentString,
 } from "./helpers.js";
@@ -47,10 +75,33 @@ import type {
 import type { AIMessage } from "../types.js";
 
 /**
- * 执行 Agent 循环（中）/ Execute the agent loop (EN).
+ * 执行 Agent 循环。
  *
- * 每轮：确保快照 → 构建消息 → 调用 AI → 执行工具 → 保护处理 → 刷新快照。
- * Per round: ensure snapshot -> build messages -> call AI -> execute tools -> apply protections -> refresh snapshot.
+ * 你可以把这个函数理解成“任务执行调度器”：
+ * - 输入：用户任务、系统提示词、工具注册表、历史消息、初始快照
+ * - 过程：按轮次持续执行“看页面 -> 让模型决策 -> 跑工具 -> 更新上下文”
+ * - 输出：最终回复、完整工具调用记录、可复用消息、结构化指标
+ *
+ * 每轮主流程（固定顺序）：
+ * 1) Ensure Snapshot：确保当前有最新快照（必要时读取）
+ * 2) Build Messages：构建紧凑上下文（remaining + 上轮轨迹 + 最新快照）
+ * 3) Call AI：请求模型并解析协议字段（`REMAINING` / `SNAPSHOT_HINT`）
+ * 4) Execute Tools：执行工具调用并应用保护机制（冗余拦截、恢复、导航刷新）
+ * 5) Reduce Remaining：推进剩余任务（优先协议，缺失时启发式剔除）
+ * 6) Guard & Refresh：防空转/防自转判定，并刷新快照进入下一轮
+ *
+ * 核心状态语义：
+ * - `remainingInstruction`：当前轮还未消费完的任务文本
+ * - `previousRoundTasks`：上一轮已执行动作，防止模型原样重复
+ * - `previousRoundPlannedTasks`：上一轮模型计划，用于重复批次检测
+ * - `protocolViolationHint`：协议修复提示（remaining 未完成却无工具调用时注入）
+ *
+ * 停机条件（命中任意一条即结束）：
+ * - 模型无工具调用且 remaining 已收敛（`REMAINING: DONE` 或空）
+ * - 协议修复后仍无推进
+ * - 连续只读轮次（防空转）
+ * - 连续重复计划批次（防自转）
+ * - 达到 `maxRounds`
  */
 export async function executeAgentLoop(
   params: AgentLoopParams,
@@ -67,7 +118,7 @@ export async function executeAgentLoop(
     callbacks,
   } = params;
 
-  // 固定依赖与运行态容器（中）
+  // 固定依赖与运行态容器
   const tools = registry.getDefinitions();
   const allToolCalls: AgentLoopResult["toolCalls"] = [];
   const fullToolTrace: ToolTraceEntry[] = [];
@@ -76,18 +127,18 @@ export async function executeAgentLoop(
     latestSnapshot: initialSnapshot,
   };
 
-  // 最终输出（中）
+  // 最终输出
   let finalReply = "";
 
-  // 循环控制状态（中）
+  // 循环控制状态
   let consecutiveSnapshotCalls = 0;
   let consecutiveReadOnlyRounds = 0;
   let usedRounds = 0;
 
-  // token 统计（中）/ Token accounting (EN).
+  // token 统计
   let inputTokens = 0;
   let outputTokens = 0;
-  // 渐进式任务状态（中）/ Progressive task state (EN).
+  // 渐进式任务状态
   // remainingInstruction: 当前轮次要继续消费的剩余文本。
   // previousRoundTasks: 上一轮已经执行过的任务数组，用于提醒 AI 不要原样重复。
   // lastPlannedBatchKey + consecutiveSamePlannedBatch: 防止 AI 连续给出相同任务批次导致自转。
@@ -101,7 +152,7 @@ export async function executeAgentLoop(
   let lastRoundHadError = false;
   let protocolViolationHint: string | undefined;
   const snapshotExpandRefIds = new Set<string>();
-  // 恢复与拦截统计（中）/ Recovery/interception counters (EN).
+  // 恢复与拦截统计
   let recoveryCount = 0;
   let redundantInterceptCount = 0;
 
@@ -118,13 +169,13 @@ export async function executeAgentLoop(
     }
     | undefined;
 
-  // 快照体积统计（中）/ Snapshot size metrics (EN).
+  // 快照体积统计
   let snapshotReadCount = 0;
   let snapshotSizeTotal = 0;
   let snapshotSizeMax = 0;
 
   /**
-   * 记录快照统计（中）/ Record snapshot metrics (EN).
+   * 记录快照统计。
    *
    * 用于输出可观测指标：读取次数、平均长度、最大长度。
    * Used for observability metrics: read count, avg size, max size.
@@ -137,7 +188,7 @@ export async function executeAgentLoop(
   };
 
   /**
-   * 刷新页面快照（中）/ Refresh page snapshot (EN).
+   * 刷新页面快照。
    *
    * 只做两件事：读取最新快照 + 更新快照统计。
    * Does exactly two things: read latest snapshot + update metrics.
@@ -152,42 +203,13 @@ export async function executeAgentLoop(
     recordSnapshotStats(pageContext.latestSnapshot);
   };
 
-  /**
-   * 解析模型文本中的快照放宽指令（中）/ Parse snapshot expansion hint from model text (EN).
-   *
-   * 约定：
-   * SNAPSHOT_HINT: EXPAND_CHILDREN #ref1 #ref2
-   */
-  const parseSnapshotExpandHints = (text: string | undefined): string[] => {
-    if (!text) return [];
-    const refs: string[] = [];
-    const regex = /^\s*SNAPSHOT_HINT\s*:\s*EXPAND_CHILDREN\s+(.+)$/gim;
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(text)) !== null) {
-      const tail = match[1] ?? "";
-      const tokens = tail.match(/#[A-Za-z0-9_-]+/g) ?? [];
-      for (const token of tokens) {
-        refs.push(token.replace(/^#/, ""));
-      }
-    }
-    return refs;
-  };
-
-  /** 从工具输入提取 hash selector（如 #1rv01x），用于定向快照放宽。 */
-  const extractHashSelectorRef = (toolInput: unknown): string | null => {
-    if (!toolInput || typeof toolInput !== "object") return null;
-    const selector = (toolInput as { selector?: unknown }).selector;
-    if (typeof selector !== "string") return null;
-    const m = selector.trim().match(/^#([A-Za-z0-9_-]+)$/);
-    return m ? m[1] : null;
-  };
 
   if (pageContext.latestSnapshot) {
     recordSnapshotStats(pageContext.latestSnapshot);
   }
 
   /**
-   * 追加工具轨迹（中）/ Append tool trace entry (EN).
+   * 追加工具轨迹。
    *
    * 同时写入：
    * - allToolCalls：对外返回结果
@@ -203,145 +225,7 @@ export async function executeAgentLoop(
     fullToolTrace.push({ round, name, input, result });
   };
 
-  /**
-   * 生成任务数组（中）/ Build normalized task array (EN).
-   *
-   * 将本轮 toolCalls 归一化成稳定字符串数组，便于：
-   * - 回传到下一轮消息上下文（提醒已执行计划）
-   * - 进行“是否与上一轮完全相同”的比较
-   */
-  const buildTaskArray = (toolCalls: Array<{ name: string; input: unknown }>): string[] =>
-    toolCalls.map(tc => {
-      const inputText = JSON.stringify(tc.input);
-      return `${tc.name}:${inputText}`;
-    });
-
-  /**
-   * 规范化模型文本输出（中）/ Normalize model text for next-round input (EN).
-   *
-   * 优先保留 REMAINING 行；否则截断首段文本，避免长篇规划污染下一轮输入。
-   * Prefer REMAINING line; otherwise keep a short excerpt to avoid long planning spillover.
-   */
-  const normalizeModelOutput = (text: string | undefined): string => {
-    if (!text) return "";
-    const trimmed = text.trim();
-    if (!trimmed) return "";
-    const remainingMatch = trimmed.match(/REMAINING\s*:\s*([\s\S]*)$/i);
-    if (remainingMatch) {
-      return `REMAINING: ${remainingMatch[1].trim()}`;
-    }
-    const firstBlock = trimmed.split(/\n\s*\n/)[0]?.trim() ?? trimmed;
-    return firstBlock.slice(0, 220);
-  };
-
-  /**
-   * 判定动作是否会触发 DOM 结构变化（
-   *
-   * 触发后应强制断轮，等待下一轮新快照继续。
-   * 
-   */
-  const shouldForceRoundBreak = (toolName: string, toolInput: unknown): boolean => {
-    const action = getToolAction(toolInput);
-    if (toolName === "navigate") {
-      return action === "goto" || action === "back" || action === "forward" || action === "reload";
-    }
-    if (toolName === "dom") {
-      // 普通 click 不强制断轮，允许同轮批量完成确定性动作（如步进器连续点击）。
-      if (action === "press") {
-        const key = typeof toolInput === "object" && toolInput !== null
-          ? String((toolInput as { key?: unknown; value?: unknown }).key ?? (toolInput as { value?: unknown }).value ?? "")
-          : "";
-        // Enter 往往触发表单提交或结构变化，保留断轮。
-        return key === "Enter";
-      }
-      return false;
-    }
-    if (toolName === "evaluate") {
-      return true;
-    }
-    return false;
-  };
-
-  /**
-   * 将“找不到元素”的失败任务整理成可重试清单（中）/ Build retry task list for not-found failures (EN).
-   */
-  const collectMissingTask = (
-    name: string,
-    input: unknown,
-    result: AgentLoopResult["toolCalls"][number]["result"],
-  ): MissingToolTask | null => {
-    if (!isElementNotFoundResult(result)) return null;
-    return {
-      name,
-      input,
-      reason: toContentString(result.content).slice(0, 240),
-    };
-  };
-
-  /**
-   * 解析 REMAINING 协议（中）/ Parse REMAINING protocol from model text (EN).
-   *
-   * 支持：
-   * - `REMAINING: <text>` → 继续下一轮消费该剩余文本
-   * - `REMAINING: DONE`   → 剩余任务为空
-   * 返回 null 表示本轮没有提供 REMAINING 标记。
-   */
-  const parseRemainingInstruction = (text: string | undefined): string | null => {
-    if (!text) return null;
-    const match = text.match(/REMAINING\s*:\s*([\s\S]*)$/i);
-    if (!match) return null;
-    const value = match[1].trim();
-    return /^done$/i.test(value) ? "" : value;
-  };
-
-  /**
-   * 推进下一轮描述（中）/ Derive next-round instruction from model text (EN).
-   *
-    * 优先 REMAINING 协议；若未提供，则保持当前 remaining 不变。
-    * Priority: REMAINING protocol first; otherwise keep current remaining instruction unchanged.
-   */
-  const deriveNextInstruction = (
-    text: string | undefined,
-    currentInstruction: string,
-  ): { nextInstruction: string; hasRemainingProtocol: boolean } => {
-    const parsed = parseRemainingInstruction(text);
-    if (parsed !== null) {
-      return { nextInstruction: parsed, hasRemainingProtocol: true };
-    }
-    // 协议缺失时按规则回退：保持当前剩余任务不变。
-    // Fallback when protocol is missing: keep current remaining instruction unchanged.
-    return { nextInstruction: currentInstruction, hasRemainingProtocol: false };
-  };
-
-  /**
-   * 启发式任务剔除（中）/ Heuristic remaining reduction for linear instructions (EN).
-   *
-   * 在 REMAINING 缺失但本轮有执行动作时，按“线性片段”剔除已执行步数，避免下一轮继续携带整段原任务。
-   * When REMAINING is missing but actions were executed, drop executed step count from a linearized instruction.
-   */
-  const reduceRemainingHeuristically = (
-    currentInstruction: string,
-    executedCount: number,
-  ): string => {
-    if (!currentInstruction.trim() || executedCount <= 0) return currentInstruction;
-    const normalized = currentInstruction
-      .replace(/\s+/g, " ")
-      .replace(/(->|=>|→)/g, " 然后 ")
-      .replace(/[，,。；;]/g, " 然后 ");
-
-    const parts = normalized
-      .split(/\s*(?:然后|再|并且|并|接着|随后|之后)\s*/g)
-      .map(part => part.trim())
-      .filter(Boolean);
-
-    if (parts.length <= 1) return currentInstruction;
-
-    const nextParts = parts.slice(Math.min(executedCount, parts.length));
-    if (nextParts.length === 0) return "";
-    return nextParts.join(" -> ");
-  };
-
-  // 主循环（中）/ Main round loop (EN).
+  // 主循环
   for (let round = 0; round < maxRounds; round++) {
     callbacks?.onRound?.(round);
     usedRounds = round + 1;
@@ -392,12 +276,11 @@ export async function executeAgentLoop(
       tools,
     });
 
-    // 计费/观测数据累计（中）/ Aggregate usage for observability (EN).
+    // 计费/观测数据累计
     inputTokens += response.usage?.inputTokens ?? 0;
     outputTokens += response.usage?.outputTokens ?? 0;
 
     // 先解析协议，最终推进在本轮执行后统一决定。
-    // Parse protocol first; final remaining update is decided after execution.
     const parsedInstructionState = deriveNextInstruction(response.text, remainingInstruction);
     const snapshotHintRefs = parseSnapshotExpandHints(response.text);
     for (const ref of snapshotHintRefs.slice(0, 8)) {
@@ -463,7 +346,6 @@ export async function executeAgentLoop(
       response.toolCalls.map(tc => ({ name: tc.name, input: tc.input })),
     );
     // 比较“本轮计划”与“上一轮计划”是否完全一致。
-    // Compare whether current planned batch is identical to the previous one.
     if (plannedBatchKey === lastPlannedBatchKey) {
       consecutiveSamePlannedBatch += 1;
     } else {
@@ -472,7 +354,6 @@ export async function executeAgentLoop(
     }
 
     // 防自转：连续两轮给出相同计划且上一轮无错误，判定任务已完成或模型卡住，直接结束。
-    // Anti-spin: if same planned batch appears twice and previous round had no error, stop the request.
     if (consecutiveSamePlannedBatch >= 2 && !lastRoundHadError) {
       finalReply = response.text?.trim() || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
@@ -501,7 +382,6 @@ export async function executeAgentLoop(
 
     // 批量执行所有工具调用
     // roundHasError 用于控制“重复批次停机”：上一轮有错误时，不应武断终止。
-    // roundHasError guards anti-spin stop: do not hard-stop if previous round had errors.
     let roundHasError = false;
     const executedTaskCalls: Array<{ name: string; input: unknown }> = [];
     const roundMissingTasks: MissingToolTask[] = [];
@@ -591,7 +471,6 @@ export async function executeAgentLoop(
     }
 
     // 将本轮执行状态传给下一轮上下文。
-    // Carry current execution state into next round context.
     if (parsedInstructionState.hasRemainingProtocol) {
       remainingInstruction = parsedInstructionState.nextInstruction;
     } else {
@@ -632,7 +511,7 @@ export async function executeAgentLoop(
     resultMessages.push({ role: "assistant", content: finalReply });
   }
 
-  // 结果统计（中）/ Compute success/failure metrics (EN).
+  // 结果统计
   const successfulToolCalls = allToolCalls.filter(tc => {
     const details = tc.result.details;
     return !(details && typeof details === "object" && Boolean((details as { error?: unknown }).error));
@@ -657,7 +536,7 @@ export async function executeAgentLoop(
     outputTokens,
   };
 
-  // 统一发出指标回调（中）/ Emit metrics callback once per chat (EN).
+  // 统一发出指标回调
   callbacks?.onMetrics?.(metrics);
 
   return { reply: finalReply, toolCalls: allToolCalls, messages: resultMessages, metrics };

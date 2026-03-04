@@ -31,7 +31,8 @@ src/
 │   │   ├── helpers.ts
 │   │   ├── snapshot.ts
 │   │   ├── messages.ts
-│   │   └── recovery.ts
+│   │   ├── recovery.ts
+│   │   └── LOOP_MECHANISM.md   # Agent Loop 权威机制说明（必须同步维护）
 │   └── ai-client/
 │       ├── index.ts
 │       ├── constants.ts
@@ -256,7 +257,9 @@ pnpm build
 
 - 权威架构说明：`README.md` 的“完整架构流程图（含链路）”章节
 - `docs/ARCHITECTURE_FLOW.md`：可作为扩展草稿或历史版本
+- Agent Loop 机制权威说明：`src/core/agent-loop/LOOP_MECHANISM.md`
 - 修改运行机制（loop、snapshot、recovery）时，必须同步更新 README 对应章节
+- 只要改动涉及 `src/core/agent-loop` 的流程语义（轮次阶段、REMAINING 协议、停机条件、恢复策略、指标语义），必须同步更新 `src/core/agent-loop/LOOP_MECHANISM.md`
 
 ## 10. 一句话协作准则
 
