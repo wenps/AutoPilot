@@ -59,7 +59,7 @@ export function createDomTool(): ToolDefinition {
     description: [
       "Perform DOM operations on the current page.",
       "Actions: click, fill, select_option, clear, check, uncheck, type, focus, hover, scroll, press, get_text, get_attr, set_attr, add_class, remove_class.",
-      "fill auto-resolves wrapper → inner input. check/uncheck toggles via click. press supports combos (Control+a). scroll supports steps for repeated scrolling.",
+      "fill auto-resolves wrapper → inner input; also sets discrete slider/rate value (e.g. fill value='4' on role=slider sets 4 stars). check/uncheck toggles via click. press supports combos (Control+a). scroll supports steps for repeated scrolling.",
     ].join(" "),
 
     schema: Type.Object({
@@ -216,6 +216,42 @@ export function createDomTool(): ToolDefinition {
               if (value) document.execCommand("insertText", false, value);
               else document.execCommand("delete", false, undefined);
               return { content: `已填写 ${describeElement(target)}: "${value}"` };
+            }
+
+            // ── role=slider 离散评分（如 el-rate）──
+            // rate 组件不含可编辑 input/textarea，resolveEditableTarget 无法穿透。
+            // 策略：根据 aria-valuemin/max 确定子项数量，点击第 N 个子项完成设值。
+            if (target instanceof HTMLElement && target.getAttribute("role") === "slider") {
+              const numValue = parseFloat(value);
+              if (isNaN(numValue)) {
+                return { content: `"${selector}" 为 role=slider，需要数字值，收到 "${value}"`, details: { error: true, code: "INVALID_NUMBER", action, selector } };
+              }
+              const min = parseFloat(target.getAttribute("aria-valuemin") || "0");
+              const max = parseFloat(target.getAttribute("aria-valuemax") || "100");
+              if (numValue < min || numValue > max) {
+                return { content: `"${selector}" 值范围 ${min}–${max}，无法设置 ${numValue}`, details: { error: true, code: "OUT_OF_RANGE", action, selector } };
+              }
+              const expectedItemCount = Math.round(max - min);
+              if (expectedItemCount > 0 && expectedItemCount <= 20) {
+                // 查找可见子项（如 el-rate__item 星级 span），取前 N 个
+                const visibleChildren = Array.from(target.children).filter(child => {
+                  if (!(child instanceof HTMLElement)) return false;
+                  const st = window.getComputedStyle(child);
+                  return st.display !== "none" && st.visibility !== "hidden";
+                }) as HTMLElement[];
+                const items = visibleChildren.slice(0, expectedItemCount);
+                if (items.length === expectedItemCount) {
+                  const itemIndex = Math.round(numValue - min) - 1;
+                  if (itemIndex >= 0 && itemIndex < items.length) {
+                    scrollIntoViewIfNeeded(items[itemIndex]);
+                    dispatchClickEvents(items[itemIndex]);
+                    await sleep(50);
+                    const newVal = target.getAttribute("aria-valuenow");
+                    return { content: `已设置 ${describeElement(target)} 评分为 ${numValue}（aria-valuenow=${newVal}）` };
+                  }
+                }
+              }
+              return { content: `"${selector}" 为 role=slider 但未找到可编辑子控件或离散子项`, details: { error: true, code: "UNSUPPORTED_FILL_TARGET", action, selector } };
             }
 
             return { content: `"${selector}" 不是可编辑元素` };

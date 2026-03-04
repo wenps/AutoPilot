@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.0.32
+
+### 变更
+
+- 快照深度与折叠策略大幅增强，解决组件库深层嵌套元素不可见问题：
+  - `page_info.snapshot` 默认 `maxDepth` 从 `7` 提升至 `12`，`maxNodes` 从 `280` 提升至 `500`
+  - `agent-loop/snapshot.ts` 核心层默认 `maxDepth` 从 `8` 同步提升至 `12`
+  - 新增**深度感知折叠策略**：深度 ≤ 5 保留含语义文本的布局容器；深度 > 5 对纯布局容器强制折叠（子节点仍提升输出），避免深层包装 div 浪费深度预算
+  - 覆盖 Element Plus / Ant Design 等组件库 16+ 层 DOM 嵌套场景，确保表单控件、选择器、穿梭框等交互元素在快照中可见
+- `dom.fill` 新增离散评分组件支持（如 `el-rate`）：
+  - `role=slider` 元素无关联 input 时，根据 `aria-valuemin/max` 自动识别离散子项并点击第 N 个完成设值
+  - 示例：`fill(selector="#rate", value="4")` 在 5 星评分组件上设置 4 星
+  - `ensureActionable` 对 `role=slider` 放行 editable 检查，允许 fill 穿透到离散设值逻辑
+- `resolveEditableTarget` 祖先搜索深度从 5 层收紧到 3 层：
+  - 避免 `role=slider`（如 el-rate）向上搜索时跨 form-item 误关联到其他表单项的 input
+
 ## 0.0.31
 
 ### 变更

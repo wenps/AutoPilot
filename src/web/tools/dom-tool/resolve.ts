@@ -166,12 +166,12 @@ export function resolveEditableTarget(el: Element): Element {
   if (inner && isEditableElement(inner) && isElementVisible(inner)) return inner;
 
   // 策略 2：ARIA widget（role=slider/spinbutton 等）→ 向上逐级查找关联 input
-  // 通用：不硬编码框架类名，按语义逐层向上搜索最近的 input
+  // 通用：不硬编码框架类名，按语义逐层向上搜索最近的 input。
+  // 限制 3 层避免跨 form-item 误关联（el-slider 的 input 通常在 2 层内）。
   const role = el.getAttribute("role");
   if (role === "slider" || role === "spinbutton") {
     let ancestor = el.parentElement;
-    // 最多向上查找 5 层，在每层的子树中搜索关联 input
-    for (let depth = 0; ancestor && depth < 5; depth++, ancestor = ancestor.parentElement) {
+    for (let depth = 0; ancestor && depth < 3; depth++, ancestor = ancestor.parentElement) {
       const input = ancestor.querySelector(
         'input[type="number"], input[role="spinbutton"], input:not([type="hidden"])',
       );

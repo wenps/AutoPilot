@@ -143,7 +143,10 @@ export function ensureActionable(el: Element, action: string, selector: string, 
     return { content: `"${selector}" 元素已禁用（disabled/aria-disabled），无法执行 ${action}`, details: { error: true, code: "ELEMENT_DISABLED", action, selector } };
   }
   if (["fill", "type", "clear"].includes(action) && !isEditableElement(el)) {
-    return { content: `"${selector}" 不是可编辑元素，无法执行 ${action}`, details: { error: true, code: "UNSUPPORTED_FILL_TARGET", action, selector } };
+    // role=slider 允许通过 fill 设值（离散评分组件如 el-rate，无关联 input 时由 fill handler 处理）
+    if (!(action === "fill" && el.getAttribute("role") === "slider")) {
+      return { content: `"${selector}" 不是可编辑元素，无法执行 ${action}`, details: { error: true, code: "UNSUPPORTED_FILL_TARGET", action, selector } };
+    }
   }
   return null;
 }

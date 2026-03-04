@@ -20,7 +20,7 @@ import { getActiveRefStore } from "./dom-tool/index.js";
 
 /** 快照配置选项 */
 export type SnapshotOptions = {
-  /** 最大遍历深度（默认 7） */
+  /** 最大遍历深度（默认 12） */
   maxDepth?: number;
   /**
    * 视口裁剪：只保留与视口相交的元素（默认 true）。
@@ -40,7 +40,7 @@ export type SnapshotOptions = {
    * 大幅减少 token 消耗。dom-tool 通过 RefStore.get(id) 解析回 DOM 元素。
    */
   refStore?: RefStore;
-  /** 最大输出节点数（默认 280），超过后停止继续遍历。 */
+  /** 最大输出节点数（默认 500），超过后停止继续遍历。 */
   maxNodes?: number;
   /** 每个父节点最多输出的子元素数（默认 32），超出部分会折叠。 */
   maxChildren?: number;
@@ -151,10 +151,10 @@ export function generateSnapshot(
     ? { maxDepth: options }
     : options;
 
-  const maxDepth = opts.maxDepth ?? 7;
+  const maxDepth = opts.maxDepth ?? 12;
   const viewportOnly = opts.viewportOnly ?? true;
   const pruneLayout = opts.pruneLayout ?? true;
-  const maxNodes = opts.maxNodes ?? 280;
+  const maxNodes = opts.maxNodes ?? 500;
   const maxChildren = opts.maxChildren ?? 32;
   const maxTextLength = opts.maxTextLength ?? 40;
   const expandOptionLists = opts.expandOptionLists ?? false;
@@ -344,10 +344,17 @@ export function generateSnapshot(
     // 浅层子树出现事件绑定：在中浅层结构中尽量保留，避免点击链路被折叠断裂。
     if (depth <= 4 && hasBoundEventsInShallowSubtree(el)) return false;
 
-    // 兼顾语义文本：含语义文本的容器也应保留。
-    if (isSemanticText(directText) || hasSemanticTextInSubtree(el)) return false;
     // 有直接文本内容的元素有意义
     if (directText) return false;
+
+    // 语义文本感知（分层策略）：
+    // - 中浅层（depth <= 5）：含语义文本的容器保留，避免结构性标题/描述被折叠。
+    // - 深层（depth > 5）：跳过子树语义文本检查，激进折叠。
+    //   深层 wrapper div（el-form-item__content、el-input__wrapper 等）大多只是布局壳，
+    //   折叠后子节点（含文本/控件）会被提升到父级输出，语义不丢失。
+    //   这是解决 Element Plus 等组件库 16+ 层嵌套导致"深度预算耗尽、表单不可见"的关键。
+    if (depth <= 5 && hasSemanticTextInSubtree(el)) return false;
+
     return true;
   }
 
@@ -674,7 +681,7 @@ export function createPageInfoTool(): ToolDefinition {
         Type.String({ description: "CSS selector for query_all action" }),
       ),
       maxDepth: Type.Optional(
-        Type.Number({ description: "Max depth for snapshot (default: 7)" }),
+        Type.Number({ description: "Max depth for snapshot (default: 12)" }),
       ),
       viewportOnly: Type.Optional(
         Type.Boolean({ description: "Only snapshot elements visible in viewport (default: true)" }),
@@ -683,7 +690,7 @@ export function createPageInfoTool(): ToolDefinition {
         Type.Boolean({ description: "Collapse empty layout containers like div/span (default: true)" }),
       ),
       maxNodes: Type.Optional(
-        Type.Number({ description: "Maximum nodes to include in snapshot (default: 280)" }),
+        Type.Number({ description: "Maximum nodes to include in snapshot (default: 500)" }),
       ),
       maxChildren: Type.Optional(
         Type.Number({ description: "Maximum children per element (default: 32)" }),
@@ -735,10 +742,10 @@ export function createPageInfoTool(): ToolDefinition {
 
           case "snapshot": {
             // 生成 DOM 快照 — AI 理解当前页面结构的主要方式
-            const maxDepth = (params.maxDepth as number) ?? 7;
+            const maxDepth = (params.maxDepth as number) ?? 12;
             const viewportOnly = (params.viewportOnly as boolean) ?? true;
             const pruneLayout = (params.pruneLayout as boolean) ?? true;
-            const maxNodes = (params.maxNodes as number) ?? 280;
+            const maxNodes = (params.maxNodes as number) ?? 500;
             const maxChildren = (params.maxChildren as number) ?? 32;
             const maxTextLength = (params.maxTextLength as number) ?? 40;
             const expandOptionLists = (params.expandOptionLists as boolean) ?? false;
