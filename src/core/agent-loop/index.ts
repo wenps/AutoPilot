@@ -529,7 +529,8 @@ export async function executeAgentLoop(
     if (parsedInstructionState.hasRemainingProtocol) {
       remainingInstruction = parsedInstructionState.nextInstruction;
     } else {
-      const nextByHeuristic = reduceRemainingHeuristically(remainingInstruction, executedTaskCalls.length);
+      const heuristicProgressUnits = executedTaskCalls.length > 0 ? 1 : 0;
+      const nextByHeuristic = reduceRemainingHeuristically(remainingInstruction, heuristicProgressUnits);
       if (nextByHeuristic !== remainingInstruction) {
         remainingInstruction = nextByHeuristic;
       } else {

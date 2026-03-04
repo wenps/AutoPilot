@@ -381,6 +381,33 @@ describe("executeAgentLoop golden paths", () => {
     });
   });
 
+  it("缺失 REMAINING 协议时：逗号提醒子句不应被误剔除", async () => {
+    const registry = createBaseRegistry();
+
+    const client = new ScriptedClient([
+      {
+        text: "",
+        toolCalls: [{ id: "1", name: "dom", input: { action: "fill", selector: "#search", value: "forkCte" } }],
+      },
+      {
+        assert: ({ messages }) => {
+          const contextPayload = String(messages[messages.length - 1]?.content ?? "");
+          expect(contextPayload).toContain("Current remaining instruction:");
+          expect(contextPayload).toContain("去这个仓库 forkCte 里创建一个 issue，记得选负责人");
+        },
+        text: "REMAINING: DONE",
+      },
+    ]);
+
+    await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "去这个仓库 forkCte 里创建一个 issue，记得选负责人",
+      maxRounds: 3,
+    });
+  });
+
   it("未完成但无工具调用：不直接结束，进入下一轮协议修复", async () => {
     const registry = createBaseRegistry();
 

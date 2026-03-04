@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.0.28
+
+### 变更
+
+- `system-prompt.ts` 调整为 Core Rules 主体并保留关键约束：
+  - 保留“当前快照 + 当前 remaining”的渐进式执行约束
+  - 补回 `Listener Abbrevs` 映射段（`clk` / `inp` / `chg` / `kdn` 等）
+  - 保留 anti-drift 提示（执行前对照原始目标，避免 create issue / create repository 混淆）
+- `agent-loop` 在 `REMAINING` 缺失时的回退推进改为保守策略：
+  - 仅在 remaining 文本含显式顺序连接词（如 `然后` / `next` / `->`）时启发式推进
+  - 每轮最多推进一步，避免因一次多工具调用误吞后续提醒子句
+
+### 测试
+
+- 新增回归用例：缺失 `REMAINING` 协议时，逗号提醒子句（如“记得选负责人”）不应被误剔除。
+
 ## 0.0.27
 
 ### 新增

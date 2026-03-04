@@ -164,21 +164,26 @@ export function reduceRemainingHeuristically(
 ): string {
   if (!currentInstruction.trim() || executedCount <= 0) return currentInstruction;
 
+  const explicitSeparator = /(->|=>|→|\bthen\b|\band then\b|\bnext\b|\bafter that\b|然后|接着|随后|之后|再)/i;
+  if (!explicitSeparator.test(currentInstruction)) {
+    return currentInstruction;
+  }
+
   const normalized = currentInstruction
     .replace(/\s+/g, " ")
-    .replace(/(->|=>|→)/g, " 然后 ")
-    .replace(/[，,。；;]/g, " 然后 ");
+    .replace(/(->|=>|→)/g, " 然后 ");
 
   const parts = normalized
-    .split(/\s*(?:然后|再|并且|并|接着|随后|之后)\s*/g)
+    .split(/\s*(?:then|and then|next|after that|然后|接着|随后|之后|再)\s*/gi)
     .map(part => part.trim())
     .filter(Boolean);
 
   if (parts.length <= 1) return currentInstruction;
 
-  const nextParts = parts.slice(Math.min(executedCount, parts.length));
+  const consumedSteps = Math.min(Math.max(1, Math.floor(executedCount)), 1);
+  const nextParts = parts.slice(Math.min(consumedSteps, parts.length));
   if (nextParts.length === 0) return "";
-  return nextParts.join(" -> ");
+  return nextParts.join(" 然后 ");
 }
 
 /**
