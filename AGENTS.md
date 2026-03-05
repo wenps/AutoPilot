@@ -158,6 +158,8 @@ src/
 - 快照增强结构语义：布局折叠后可通过括号分组块（`collapsed-group`）看出被提升节点之间的来源关联。
 - 仅交互节点分配 hash ID：通过 `hasInteractiveTrackedEvents()` + 语义标签/ARIA role 判定交互性，非交互节点不占 token。
 - 角色优先标签：当元素拥有 `INTERACTIVE_ROLES` 内的 ARIA role 且与 HTML tag 不等价时，用 role 替代 tag 作为显示标签（如 `[combobox]` 替代 `[input] role="combobox"`、`[slider]` 替代 `[div] role="slider"`），同时从属性列表中移除冗余的 `role="..."`。
+- 点击目标选择约束：`click/navigation` 动作优先命中具备点击信号的目标（`listeners` 含 `clk/pdn/mdn`、`onclick`、原生链接/按钮语义或 `role=button/link`）；仅 `focus/hover` 信号节点默认视为上下文，不作为主点击目标。
+- 点击无效关联回退：当一次点击未产生推进时，下一轮应优先尝试同语义组内最近的可操作 sibling/ancestor（如同一行中相邻 repo path/link/button），避免重复点击同一无效目标。
 
 ## 5. 模块职责细化
 

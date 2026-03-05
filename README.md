@@ -318,7 +318,7 @@ agent.clearSystemPrompts();
 console.log(agent.getSystemPrompts());
 ```
 
-内置 prompt 的核心规则包括：快照优先决策、任务增量消费（REMAINING 协议）、批量执行、禁止 page_info 空转等。注册表中的 Prompt 会作为扩展段追加到内置 prompt 之后。
+内置 prompt 的核心规则包括：快照优先决策、任务增量消费（REMAINING 协议）、批量执行、禁止 page_info 空转等。并且在点击场景中要求优先选择具备明确点击信号（如 `clk/pdn/mdn`、`onclick`、链接/按钮语义）的目标；若点击无效，下一轮应优先尝试同语义组中邻近的可操作元素，避免重复点击无效节点。注册表中的 Prompt 会作为扩展段追加到内置 prompt 之后。
 
 #### `dryRun`（干运行模式）
 

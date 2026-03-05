@@ -107,6 +107,9 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
 
       // ── 事件信号：listeners="clk,inp" 标注运行时事件绑定，辅助 AI 选择操作目标 ──
       "- listeners=\"...\" on snapshot indicates bound event handlers (see Listener Abbrevs below). Prefer targets with relevant listeners when multiple candidates look similar.",
+      "- Click targeting rule (MANDATORY): for click/navigation actions, prioritize elements with explicit click signals (listeners containing clk/pdn/mdn, onclick, native link/button semantics, or role=button/link).",
+      "- Do NOT click focus/hover-only nodes for navigation (e.g. listeners only like fcs/blr/men/mlv without click-related signals). Treat those as context labels unless no better actionable target exists.",
+      "- Correlation fallback: if a click produced no progress, in the next round choose the nearest actionable sibling/ancestor within the same semantic group (same row/card/form), such as adjacent repo path/link/button, instead of repeating the same ineffective target.",
 
       // ── 批量执行：同轮完成所有独立可见操作，减少轮次消耗 ──
       "- Batch independent visible actions in one round. Do not split one form into many rounds unnecessarily.",

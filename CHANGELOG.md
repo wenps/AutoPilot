@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.35
+
+### 变更
+
+- `system-prompt` 点击目标选择策略增强：
+  - 对 `click/navigation` 动作新增强约束：优先选择具备明确点击信号的元素（如 `listeners` 含 `clk/pdn/mdn`、`onclick`、原生 `a/button` 语义或 `role=button/link`）
+  - 明确禁止将仅 `focus/hover` 信号节点当作导航点击目标（如仅 `fcs/blr/men/mlv`）
+  - 引入“关联性回退”指引：点击无效时，下一轮应优先尝试同语义组内最近的可操作 sibling/ancestor，避免重复点击无效目标
+
+### 文档
+
+- 同步更新 `README.md`：补充内置 prompt 的点击目标与关联回退规则说明。
+- 同步更新 `AGENTS.md`：补充工具语义对齐章节中的“点击信号优先 + 邻近关联回退”执行约束。
+
 ## 0.0.34
 
 ### 新增
