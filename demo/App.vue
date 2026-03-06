@@ -681,6 +681,86 @@
             </el-col>
           </el-row>
         </el-tab-pane>
+
+        <el-tab-pane label="Prompt 验证" name="prompt-check">
+          <el-row :gutter="20">
+            <el-col :span="16">
+              <el-card header="同名项 + 关联元素切换验证">
+
+                <el-form label-width="100px" size="default">
+                  <el-form-item label="仓库路径">
+                    <div class="prompt-check-row" :class="{ 'is-blurred': promptDemoTopBlurred }">
+                      <div class="path-cell">
+                        <el-input model-value="/team/repo-b" readonly />
+                        <span v-if="promptDemoTopTouched" class="path-hint">已触发预览事件</span>
+                      </div>
+                      <span
+                        class="path-open path-open-decoy"
+                        role="button"
+                        tabindex="0"
+                        aria-label="打开"
+                        @mouseenter="onPromptDemoTopHover"
+                        @mousedown="onPromptDemoTopMouseDown"
+                        @click="onPromptDemoTopClick"
+                        @keydown.enter.prevent="onPromptDemoTopClick('enter')"
+                      >
+                        <span class="open-level">L2</span>
+                        <span class="open-shell">更多</span>
+                        <span class="open-core">打开</span>
+                      </span>
+                    </div>
+                  </el-form-item>
+
+                  <el-form-item label="仓库路径">
+                    <div class="prompt-check-row">
+                      <el-input model-value="/team/repo-b" readonly />
+                      <span
+                        class="path-open path-open-real"
+                        role="button"
+                        tabindex="0"
+                        aria-label="打开详情"
+                        data-level="4"
+                        @click="onPromptDemoRealOpen('/team/repo-b')"
+                      >
+                        <span class="open-level">L4</span>
+                        <span class="open-chain">
+                          <span>操作</span>
+                          <span>进入</span>
+                          <span class="open-core">打开</span>
+                        </span>
+                      </span>
+                    </div>
+                  </el-form-item>
+                </el-form>
+
+                <div class="prompt-check-actions">
+                  <el-button size="small" @click="clearPromptDemoEvents">清空事件日志</el-button>
+                </div>
+              </el-card>
+            </el-col>
+
+            <el-col :span="8">
+              <el-card header="事件日志">
+                <div class="prompt-check-log">
+                  <div v-if="promptDemoEvents.length === 0" class="prompt-check-empty">暂无事件</div>
+                  <div v-for="(event, idx) in promptDemoEvents" :key="`${event}-${idx}`" class="prompt-check-log-item">
+                    {{ event }}
+                  </div>
+                </div>
+              </el-card>
+            </el-col>
+          </el-row>
+
+          <el-dialog v-model="promptDemoDialogVisible" title="仓库详情" width="520px">
+            <el-descriptions :column="1" border>
+              <el-descriptions-item label="路径">{{ promptDemoSelectedPath }}</el-descriptions-item>
+              <el-descriptions-item label="状态">已打开</el-descriptions-item>
+            </el-descriptions>
+            <template #footer>
+              <el-button @click="promptDemoDialogVisible = false">关闭</el-button>
+            </template>
+          </el-dialog>
+        </el-tab-pane>
       </el-tabs>
     </el-main>
 
@@ -702,6 +782,7 @@
         <el-button size="small" @click="sendQuick('打开对话框，然后在活动名称输入框填写 团建活动')">操作弹窗</el-button>
         <el-button size="small" @click="sendQuick('点击下一步按钮两次，让步骤条到第三步')">步骤条</el-button>
         <el-button size="small" @click="sendQuick('把评分设为4星，然后设置滑块值为75')">评分滑块</el-button>
+        <el-button size="small" @click="sendQuick('切换到 Prompt 验证 tab，点击仓库路径 /team/repo-b 对应的打开按钮，查看弹窗内容')">Prompt验证</el-button>
         <el-button size="small" @click="clearHistory">清空记忆</el-button>
       </div>
       <div class="input-bar">
@@ -891,6 +972,14 @@ const activeCollapse = ref(['1'])
 
 // ===== Button loading =====
 const btnLoading = ref(false)
+
+// ===== Prompt 验证 Demo =====
+const promptDemoDialogVisible = ref(false)
+const promptDemoSelectedPath = ref('')
+const promptDemoEvents = ref<string[]>([])
+const promptDemoTopBlurred = ref(false)
+const promptDemoTopTouched = ref(false)
+let promptDemoBlurTimer: number | undefined
 
 // ===== Tree =====
 const treeData = [
@@ -1157,6 +1246,37 @@ function querySearch(queryString: string, cb: (results: { value: string }[]) => 
 function onAutoSelect(item: { value: string }) {
   ElMessage.success(`选择了：${item.value}`)
 }
+
+function onPromptDemoRealOpen(path: string) {
+  promptDemoSelectedPath.value = path
+  promptDemoDialogVisible.value = true
+  promptDemoEvents.value.unshift(`OPEN_OK ${path}`)
+}
+
+function onPromptDemoTopHover() {
+  if (promptDemoBlurTimer !== undefined) {
+    window.clearTimeout(promptDemoBlurTimer)
+  }
+  promptDemoTopBlurred.value = true
+  promptDemoEvents.value.unshift('HOVER_TOP_OPEN')
+  promptDemoBlurTimer = window.setTimeout(() => {
+    promptDemoTopBlurred.value = false
+  }, 500)
+}
+
+function onPromptDemoTopMouseDown() {
+  promptDemoEvents.value.unshift('TOP_MOUSEDOWN_NOOP')
+}
+
+function onPromptDemoTopClick(trigger: 'click' | 'enter' = 'click') {
+  promptDemoTopTouched.value = true
+  promptDemoEvents.value.unshift(`TOP_${trigger.toUpperCase()}_NOOP`)
+  ElMessage.info('仅触发预览事件，未打开仓库详情')
+}
+
+function clearPromptDemoEvents() {
+  promptDemoEvents.value = []
+}
 </script>
 
 <style>
@@ -1291,5 +1411,99 @@ html, body {
   padding: 12px 16px;
   font-weight: 600;
   font-size: 14px;
+}
+
+.prompt-check-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.path-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.path-hint {
+  font-size: 11px;
+  color: #909399;
+}
+
+.path-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  color: #606266;
+  line-height: 30px;
+  user-select: none;
+}
+
+.prompt-check-row.is-blurred .path-open {
+  filter: blur(1.2px);
+}
+
+.path-open-decoy {
+  cursor: pointer;
+}
+
+.path-open-real {
+  cursor: pointer;
+}
+
+.open-level {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 1;
+  color: #909399;
+  background: #f4f4f5;
+}
+
+.open-shell {
+  color: #909399;
+}
+
+.open-chain {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.open-core {
+  color: #303133;
+}
+
+.prompt-check-actions {
+  margin-top: 10px;
+}
+
+.prompt-check-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 120px;
+}
+
+.prompt-check-empty {
+  font-size: 12px;
+  color: #909399;
+}
+
+.prompt-check-log-item {
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f4f4f5;
+  color: #303133;
 }
 </style>
