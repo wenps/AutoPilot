@@ -161,15 +161,15 @@ src/
 - 点击目标选择约束：`click/navigation` 动作优先命中具备点击信号的目标（`listeners` 含 `clk/pdn/mdn`、`onclick`、原生链接/按钮语义或 `role=button/link`）；仅 `focus/hover` 信号节点默认视为上下文，不作为主点击目标。
 - 点击无效关联回退：当一次点击未产生推进时，下一轮应优先尝试同语义组内最近的可操作 sibling/ancestor（如同一行中相邻 repo path/link/button），避免重复点击同一无效目标。
 
-### 4.6 效果验证机制（新增）
+### 4.6 效果验证机制
 
-每轮 Round 1+ 消息在注入上轮操作列表后，追加 Effect verification 段落：
-1. 要求 AI 将上轮执行的每个操作与当前最新快照进行对比
-2. 判断操作是否产生了预期效果（如 click 是否打开弹窗/导航、fill 是否改变了输入值、select_option 是否更新了选中项）
-3. 若某个操作未产生可见效果，不重复同一目标，改为在同一语义区域（同行/同卡片/同表单组）内寻找信号更强的邻近可操作元素
-4. 确认哪些操作已生效后，才规划本轮新动作
-
-触发条件：仅在存在上轮操作（previousRoundTasks 非空）时注入，Round 0 不受影响。
+通过 system prompt 和 Round 1+ 用户消息中的通用 "Effect check" 规则实现：
+- 每轮行动前，要求 AI 确认上轮操作的预期效果是否在当前快照中可见
+- 若未生效，不重复同一目标，改为尝试同语义区域内信号更强的邻近元素
+- 实现方式：
+  - system prompt 中的 "Effect check" 规则（通用，覆盖所有动作类型）
+  - Round 1+ 用户消息中补强同一规则
+  - previousRoundTasks 列表后附加简短效果提示（非阻塞式，避免分析瘧痪）
 
 ## 5. 模块职责细化
 
@@ -182,9 +182,9 @@ src/
 
 - `messages.ts`
   - 紧凑消息构建
-  - Round 0 注入“原始任务 + 快照”
-  - Round 1+ 注入"remaining + done steps + previous executed + effect verification + previous model output(normalized) + latest snapshot"
-  - 效果验证段落（Effect verification）：当存在上轮操作时，要求 AI 在规划新动作前先确认上轮操作是否生效
+  - Round 0 注入“原始任务 + 快照 + 关键行为强化”
+  - Round 1+ 注入“remaining + done steps + previous executed + effect check + previous model output + latest snapshot”
+  - 效果检查（Effect check）：通过简短提示要求 AI 确认上轮操作是否生效，非阻塞式设计避免分析瘧痪
 
 - `snapshot.ts`
   - 读取页面 URL/快照

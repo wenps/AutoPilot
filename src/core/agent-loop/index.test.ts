@@ -322,9 +322,9 @@ describe("executeAgentLoop golden paths", () => {
       {
         assert: ({ messages }) => {
           const payload = String(messages[messages.length - 1]?.content ?? "");
-          expect(payload).toContain("Previous round planned task array (already executed):");
+          expect(payload).toContain("Previous executed:");
           expect(payload).toContain("dom:{\"action\":\"click\",\"selector\":\"#openModal\"}");
-          expect(payload).toContain("Previous round model planned task array (before execution):");
+          expect(payload).toContain("Previous planned:");
           expect(payload).toContain("dom:{\"action\":\"fill\",\"selector\":\"#title\",\"value\":\"任务\"}");
         },
         text: "REMAINING: DONE",
@@ -358,10 +358,10 @@ describe("executeAgentLoop golden paths", () => {
       {
         assert: ({ messages }) => {
           const contextPayload = String(messages[messages.length - 1]?.content ?? "");
-          expect(contextPayload).toContain("Current remaining instruction:");
+          expect(contextPayload).toContain("Remaining:");
           expect(contextPayload).toContain("发送");
           expect(contextPayload).not.toContain("输入框输入 abc 然后发送");
-          expect(contextPayload).toContain("Previous round model output (normalized");
+          expect(contextPayload).toContain("Previous model output:");
           expect(contextPayload).toContain("REMAINING: 发送");
         },
         text: "REMAINING: DONE",
@@ -394,7 +394,7 @@ describe("executeAgentLoop golden paths", () => {
         assert: ({ messages }) => {
           const content = String(messages[messages.length - 1]?.content ?? "");
           expect(content).toContain("Protocol violation in previous round");
-          expect(content).toContain("Previous round model output (normalized");
+          expect(content).toContain("Previous model output:");
           expect(content).toContain("REMAINING: 打开任务弹窗");
         },
         text: "REMAINING: DONE",

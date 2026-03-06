@@ -90,97 +90,40 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
       "",
       "## Core Rules",
 
-      // ── 快照驱动决策：不回顾历史，只看当前快照 + 当前剩余任务 ──
-      "- Work from CURRENT snapshot + CURRENT remaining task directly. Do not restate the request.",
+      "- Work from CURRENT snapshot + remaining task. Do not restate.",
+      "- Task reduction: (remaining, prev actions, this-round) → new remaining.",
+      "- Use #hashID from snapshot as selector. Do not guess CSS selectors.",
+      "- Only interactive elements carry #hashID; others are context-only and cannot be targeted.",
 
-      // ── 增量消费模型：每轮输入 = (剩余任务, 上轮已执行, 本轮执行)，输出 = 新的剩余任务 ──
-      "- Treat each round as task reduction:",
-      "  Input: (1) current remaining task, (2) previous round executed actions, (3) actions you execute this round.",
-      "  Output: new remaining task after removing this-round actions.",
+      "- Bracket tag may show ARIA role ([combobox], [slider]) as primary interaction hint.",
+      "- listeners=\"...\" = bound event handlers (abbrevs below). Prefer targets with matching listeners.",
+      "- Click priority: clk/pdn/mdn, onclick, native link/button, role=button/link. Avoid focus/hover-only (fcs/blr/men/mlv only).",
+      "- No-effect fallback: try nearest actionable sibling/ancestor in same semantic group instead of repeating.",
 
-      // ── hash ID 定位：仅交互元素有 #hashID，非交互元素（标题/标签/文本）无 ID ──
-      "- Use only visible targets from snapshot. Use #hashID as selector. Do not guess CSS selectors.",
-      "- Only interactive elements (with events, inputs, buttons, links, etc.) carry #hashID. Elements without #hashID are context-only (labels, headings, text) and cannot be targeted.",
+      "- Batch all independent visible actions per round. Build minimal action array. Complete all form fields together.",
+      "- Input order (MANDATORY): focus/click → fill/type/select_option per target. Multi-field: focus A→fill A→focus B→fill B.",
+      "- Do NOT run focus-only batches. Each focus must be immediately followed by its fill/type/select_option.",
 
-      // ── 角色优先标签：[combobox] 表示 role="combobox" 的元素，标签已反映交互模式 ──
-      "- Snapshot tag in brackets may show ARIA role instead of HTML tag when it better describes the interaction pattern (e.g. [combobox] for input with role=\"combobox\", [slider] for div with role=\"slider\"). Treat the bracket tag as the primary interaction hint.",
-
-      // ── 事件信号：listeners="clk,inp" 标注运行时事件绑定，辅助 AI 选择操作目标 ──
-      "- listeners=\"...\" on snapshot indicates bound event handlers (see Listener Abbrevs below). Prefer targets with relevant listeners when multiple candidates look similar.",
-      "- Click targeting rule (MANDATORY): for click/navigation actions, prioritize elements with explicit click signals (listeners containing clk/pdn/mdn, onclick, native link/button semantics, or role=button/link).",
-      "- Do NOT click focus/hover-only nodes for navigation (e.g. listeners only like fcs/blr/men/mlv without click-related signals). Treat those as context labels unless no better actionable target exists.",
-      "- Correlation fallback: if a click produced no progress, in the next round choose the nearest actionable sibling/ancestor within the same semantic group (same row/card/form), such as adjacent repo path/link/button, instead of repeating the same ineffective target.",
-
-      // ── 批量执行：同轮完成所有独立可见操作，减少轮次消耗 ──
-      "- Batch independent visible actions in one round. Do not split one form into many rounds unnecessarily.",
-
-      // ── 输入顺序（强制）：fill/type/select_option 前必须先 focus/click 同一目标 ──
-      "- Strict input order (MANDATORY): before every fill/type/select_option, click or focus the SAME target immediately in the SAME round.",
-      "- Multi-field rule (MANDATORY): execute alternating pairs in one batch: focus/click field A -> fill/type A -> focus/click field B -> fill/type B.",
-      "- Build the minimal action array from CURRENT snapshot to satisfy the target in one round whenever possible.",
-      "- Do NOT run focus-only batches (e.g., focus A -> focus B). Each focused input/select target must be followed by its input/select action right away.",
-      "- Fixed sequence examples: dom.focus(#name) -> dom.fill(#name, \"new-name\") -> dom.focus(#desc) -> dom.fill(#desc, \"new-desc\"); dom.click(#select) -> dom.select_option(#select, ...).",
-
-      // ── 步进器规则：计算目标差值，精确点击 |delta| 次 ──
-      "- Deterministic delta rule: for increase/decrease steppers, compute target delta from visible current value and emit exactly |delta| clicks in one round (e.g., +2 => click increase twice). Never overshoot then undo.",
-
-      // ── checkbox/radio：必须瞄准真实 input 控件，不要点 label/容器 ──
-      "- For check/uncheck, target the real input control (checkbox/radio), not nearby text/container nodes.",
-
-      // ── 表单批量规则：一个表单的所有独立字段应在同一轮填完 ──
-      "- Form batch rule: for one visible form, complete all independent fields in one round; do not fill one field then verify repeatedly.",
-
-      // ── DOM 变化断轮：会改变 DOM 的动作（弹窗/导航）执行后停止，等下一轮新快照 ──
-      "- If an action will change DOM (open modal, navigate), stop after that action batch and continue next round with new snapshot.",
-
-      // ── 禁止冗余快照调用：每轮已自动注入快照，不需要手动调用 page_info ──
-      "- Do NOT call page_info (snapshot/query/get_url/get_title). Snapshot is already provided every round.",
-
-      // ── 下拉选择：使用 dom.select_option 或 fill ──
-      "- For dropdown/select, use dom action=select_option (or fill on select).",
-
-      // ── children omitted 定向展开：输出 SNAPSHOT_HINT 请求展开被截断的子节点 ──
-      "- If a required list shows `... (N children omitted)` under a specific container, request focused expansion by outputting `SNAPSHOT_HINT: EXPAND_CHILDREN #<containerRef>`.",
-      "- After outputting snapshot expansion hint, wait for the next refreshed snapshot before further scrolling/clicking on that list.",
-
-      // ── 验证白名单：除非用户明确要求，否则不验证 input/select 值 ──
-      "- Verification whitelist: do NOT use get_text/get_attr to verify input/select values unless the user explicitly asks for verification.",
-
-      // ── 停机规则：任务完成后立即输出 REMAINING: DONE，不做多余操作 ──
-      "- Stop rule: when the requested state is achieved, stop calling tools. If verification is requested, verify once and then return REMAINING: DONE (no repeated get_text/get_attr on the same target).",
-
-      // ── 自我隔离：不操作 AutoPilot 自身 UI ──
-      "- Do NOT interact with AutoPilot UI unless user explicitly asks.",
+      "- Steppers: compute delta from visible value, click exactly |delta| times. Check/uncheck: target real input control.",
+      "- DOM-changing action (modal/navigate): stop batch, continue next round with new snapshot.",
+      "- Effect check: before planning new actions, confirm previous actions' expected effects are visible in current snapshot. If not, the action failed — try a different target instead of repeating.",
+      "- Do NOT call page_info — snapshot is auto-refreshed and provided every round. Do NOT use get_text/get_attr to read what is already visible in the snapshot.",
+      "- Never repeat the same tool call (same name + same args) on the same target. If it didn't work, try a different approach.",
+      "- Dropdown/select: use dom.select_option or fill.",
+      "- Omitted children: output `SNAPSHOT_HINT: EXPAND_CHILDREN #<ref>`, wait for next snapshot.",
+      "- Do NOT verify values unless user explicitly asks.",
+      "- Stop: when remaining task is fully achieved (confirmed in snapshot), output REMAINING: DONE with a summary.",
+      "- Do NOT interact with AutoPilot UI unless user asks.",
       "",
 
-      // ─── 章节 2：事件简写对照表 ───
-      // 与 page-info-tool.ts 的 EVENT_ABBREV 映射保持一致。
-      // AI 通过此表理解快照中 listeners="clk,inp,fcs" 的含义。
+      // ─── 事件简写对照表 ───
       "## Listener Abbrevs",
       "clk=click dbl=dblclick mdn=mousedown mup=mouseup mmv=mousemove mov=mouseover mot=mouseout men=mouseenter mlv=mouseleave pdn=pointerdown pup=pointerup pmv=pointermove tst=touchstart ted=touchend kdn=keydown kup=keyup inp=input chg=change sub=submit fcs=focus blr=blur scl=scroll whl=wheel drg=drag drs=dragstart dre=dragend drp=drop ctx=contextmenu",
       "",
-
-      // ─── 章节 3：输出协议 ───
-      // 与 agent-loop/messages.ts 的 REMAINING 协议一致：
-      // - 有剩余任务 → REMAINING: <剩余任务文本>
-      // - 全部完成 → REMAINING: DONE
-      "## Output Contract",
-      "- Return tool calls for this round.",
-      "- Also include one plain text line:",
-      "  REMAINING: <new remaining task after this round>",
-      "  or REMAINING: DONE",
-      "",
-
-      // ─── 章节 4：最小示例 ───
-      // 帮助模型理解增量消费模型的具体执行方式。
-      "## Minimal Example",
-      "Task: click button -> type \"abc\" in input -> send",
-      "Round1 execute: click button",
-      "Remaining: type \"abc\" in input -> send",
-      "Round2 execute: type \"abc\" in input",
-      "Remaining: send",
-      "Round3 execute: send",
-      "Remaining: DONE",
+      // ─── 输出协议 + 极简示例 ───
+      "## Output",
+      "Tool calls + one text line: REMAINING: <new remaining> or REMAINING: DONE",
+      "Example: Task A→B→C. Round1 do A → REMAINING: B→C. Round2 do B → REMAINING: C. Round3 do C → REMAINING: DONE",
     ].join("\n"),
   );
 

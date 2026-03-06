@@ -83,9 +83,9 @@ describe("behavior boundary - agent ui interaction", () => {
     );
 
     const payload = String(messages[1].content);
-    expect(payload).toContain("Previous round model output (normalized");
+    expect(payload).toContain("Previous model output:");
     expect(payload).toContain("REMAINING: 填写标题");
-    expect(payload).toContain("Previous round model planned task array");
+    expect(payload).toContain("Previous planned:");
     expect(payload).toContain("Protocol violation test");
   });
 });

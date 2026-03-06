@@ -1161,23 +1161,25 @@ loop 对本轮返回做以下处理：
 
 - 从当前快照直接执行，不复述任务
 - 任务按“剔除模型”推进（current + previous + this-round -> new remaining）
-- 禁止 `page_info` 作为规划手段
+- 效果检查：规划新动作前先确认上轮操作是否在快照中生效
+- 禁止 `page_info` 作为规划手段，禁止重复相同工具调用
 - 可见目标尽量同轮批量执行
 - DOM 会变化的动作执行后在下一轮继续
+- 停机前必须在快照中确认任务已完成
 - 统一输出 `REMAINING` 协议
 
 ### B. Round Messages（轮次状态层）
 
 由 `src/core/agent-loop/messages.ts` 构建，职责是把运行时状态传给模型：
 
-- `Current remaining instruction`
-- `Done steps (do NOT repeat)`
-- `Previous round planned task array`
-- `Effect verification` — 要求 AI 对比上轮操作与当前快照，确认每个操作是否生效；未生效时从同区域找其他目标而非重复
-- `Previous round model output (normalized)`
-- `Latest DOM snapshot`
+- `Remaining: <instruction>` — 当前剩余任务
+- `Done steps (do NOT repeat)` — 已完成步骤摘要
+- 关键行为强化（批量执行、禁 page_info、DOM 断轮、Effect check）
+- `Previous executed` + 效果提示（简短非阻塞）
+- `Previous model output` — 上轮模型输出摘要
+- `## Snapshot` — 最新 DOM 快照
 
-这层是“每轮变化”的动态上下文。
+这层是“每轮变化”的动态上下文，已大幅精简避免与 system prompt 规则重复。
 
 ### C. Loop Control（执行控制层）
 

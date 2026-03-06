@@ -692,7 +692,6 @@
                     <div class="prompt-check-row" :class="{ 'is-blurred': promptDemoTopBlurred }">
                       <div class="path-cell">
                         <el-input model-value="/team/repo-b" readonly />
-                        <span v-if="promptDemoTopTouched" class="path-hint">已触发预览事件</span>
                       </div>
                       <span
                         class="path-open path-open-decoy"

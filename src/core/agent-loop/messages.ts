@@ -217,31 +217,24 @@ export function buildCompactMessages(
     const parts: string[] = [
       userMessage,
       "",
-      "## Progressive execution state",
-      "Current remaining instruction to execute this round:",
-      activeInstruction,
+      `Remaining: ${activeInstruction}`,
     ];
     if (currentUrl) {
-      parts.push("", `URL: ${currentUrl}`);
+      parts.push(`URL: ${currentUrl}`);
     }
     if (latestSnapshot) {
       parts.push(
         "",
-        "## Current page snapshot",
-        "Apply task-reduction model directly from this snapshot. Do NOT restate the task.",
-        "Use hash IDs (e.g. #a1b2c) from the snapshot as selector params.",
-        "Do NOT call page_info (get_url/get_title/query_all/snapshot).",
-        "Batch independent visible actions in one round.",
-        "Build the minimal action array from current snapshot to finish this remaining instruction in one round whenever possible.",
-        "For deterministic increase/decrease controls, compute delta from current visible value and issue exactly that many clicks in one round (e.g., +2 => two increase clicks). Do not overshoot then undo.",
-        "If action changes DOM (open modal/navigate), stop that batch and continue next round.",
-        "For dropdown/select fields, use dom with action=select_option (or fill on a select).",
-        "If a needed list shows `... (N children omitted)` under a specific container, output `SNAPSHOT_HINT: EXPAND_CHILDREN #<containerRef>` and wait for next round snapshot.",
-        "Stop rule: once requested state is reached, stop tool calls. If verification is needed, verify once and then output REMAINING: DONE.",
+        "Use #hashID from snapshot. Do NOT call page_info (snapshot is auto-refreshed). Batch all visible actions in one round.",
+        "Effect check: confirm previous actions' expected effects in current snapshot before planning new actions.",
+        "If action changes DOM (modal/navigate), stop batch and continue next round.",
+        "If a list shows `... (N children omitted)`, output `SNAPSHOT_HINT: EXPAND_CHILDREN #<ref>` and wait for next snapshot.",
         allowAgentUiInteraction
           ? "User explicitly asked to operate AutoPilot UI. You may interact with chat input/send/dock only as requested."
           : "Do NOT interact with any AI chat UI elements (chat input, send button, dock). Only operate on the actual page content.",
-        "Output one line: REMAINING: <new remaining task after this round> or REMAINING: DONE",
+        "Output: REMAINING: <new remaining> or REMAINING: DONE",
+        "",
+        "## Snapshot",
         wrapSnapshot(latestSnapshot),
       );
     }
@@ -275,70 +268,41 @@ export function buildCompactMessages(
   // 第 2 条 user 消息：执行上下文 + 协议约束 + 最新快照
   const hasErrors = trace.some(e => hasToolError(e.result));
   const contextParts: string[] = [
-    // 执行上下文语义：
-    // - 当前 remaining 是唯一待消费目标
-    // - 已完成步骤不重复
-    // - 必须基于最新快照决策，不猜测未来 DOM
-    // - 要求模型继续输出 REMAINING 协议
-    "## Execution context",
-    "Current remaining instruction:",
-    activeInstruction,
+    // 当前剩余任务（唯一待消费目标）
+    `Remaining: ${activeInstruction}`,
     "",
-    "Task-reduction model:",
-    "Input: current remaining instruction + previous round executed actions + this-round actions.",
-    "Output: new remaining instruction after removing this-round actions.",
-    "Start from visible page state directly. Do NOT restate task. Do NOT output planning text.",
-    "Execute all independent visible sub-tasks in one round.",
-    "Do NOT act on elements not present in this snapshot yet.",
-    "If action changes DOM (open modal/navigate), stop after that batch and continue next round.",
-    "Do NOT call page_info (get_url/get_title/query_all/snapshot).",
-    "For dropdown/select fields, use dom with action=select_option (or fill on a select).",
-    "If a needed list shows `... (N children omitted)` under a specific container, output `SNAPSHOT_HINT: EXPAND_CHILDREN #<containerRef>` and wait for next round snapshot.",
-    "Build the minimal action array from current snapshot to finish this remaining instruction in one round whenever possible.",
-    "For deterministic increase/decrease controls, compute delta from current visible value and issue exactly that many clicks in one round (e.g., +2 => two increase clicks). Do not overshoot then undo.",
-    "Stop rule: once requested state is reached, stop tool calls. If verification is needed, verify once and then output REMAINING: DONE.",
+    // ── 关键行为强化（system prompt 已有完整规则，此处补强模型易违反的关键条） ──
+    "Execute all independent visible sub-tasks in one round. Do NOT call page_info (snapshot is auto-refreshed).",
+    "Effect check: confirm previous actions' expected effects in snapshot before planning new actions.",
+    "Never repeat the same tool call on the same target. If no effect, try a different element.",
+    "If action changes DOM (modal/navigate), stop batch and continue next round.",
+    "If a list shows `... (N children omitted)`, output `SNAPSHOT_HINT: EXPAND_CHILDREN #<ref>` and wait.",
     allowAgentUiInteraction
-      ? "User explicitly asked to operate AutoPilot UI. You may interact with chat input/send/dock only as requested."
-      : "Do NOT interact with any AI chat UI elements (chat input, send button, dock). Only operate on the actual page content.",
+      ? "User explicitly asked to operate AutoPilot UI."
+      : "Do NOT interact with AI chat UI elements.",
+    "Output: REMAINING: <new remaining> or REMAINING: DONE",
   ];
 
   if (hasErrors) {
-    contextParts.push(
-      "",
-      "The last step failed. Retry with a different approach, or skip and continue with other visible targets.",
-    );
+    contextParts.push("", "Last step failed. Retry differently or skip to other targets.");
   } else {
-    contextParts.push(
-      "",
-      "If the goal is fully done, reply with a short summary (no tool calls).",
-    );
+    contextParts.push("", "If fully done, reply summary only (no tools).");
   }
 
   if (previousRoundTasks && previousRoundTasks.length > 0) {
+    // 上轮已执行 + 简短效果提示（非阻塞，避免分析瘧痪）
     contextParts.push(
       "",
-      "Previous round planned task array (already executed):",
+      "Previous executed:",
       ...previousRoundTasks.map((task, index) => `${index + 1}. ${task}`),
-    );
-
-    // ─── 效果验证指令 ───
-    // 要求 AI 在规划新操作前，先对比上轮操作与当前快照，判断是否生效。
-    // 如果未生效，要求从同一区域找其他可操作目标，而非重复相同操作。
-    contextParts.push(
-      "",
-      "## Effect verification (MANDATORY before planning new actions)",
-      "Compare the above executed actions against the CURRENT snapshot below:",
-      "- Did each action produce the expected result? (e.g., click opened a dialog/navigated; fill changed the input value; select_option updated the selected item)",
-      "- If an action had NO visible effect (page unchanged near the target area), do NOT repeat the same target.",
-      "  Instead, look for a different actionable element nearby (sibling/ancestor in the same row/card/group) that has stronger interaction signals (click listeners, button/link semantics).",
-      "- Only after confirming which previous actions succeeded, plan this round's new actions on the remaining unfinished parts.",
+      "If any had no visible effect, try a different nearby element instead of repeating.",
     );
   }
 
   if (previousRoundPlannedTasks && previousRoundPlannedTasks.length > 0) {
     contextParts.push(
       "",
-      "Previous round model planned task array (before execution):",
+      "Previous planned:",
       ...previousRoundPlannedTasks.map((task, index) => `${index + 1}. ${task}`),
     );
   }
@@ -346,26 +310,18 @@ export function buildCompactMessages(
   if (previousRoundModelOutput) {
     contextParts.push(
       "",
-      "Previous round model output (normalized, for task reduction input):",
+      "Previous model output:",
       previousRoundModelOutput,
     );
   }
 
-  contextParts.push(
-    // 协议约束：要求模型显式返回下一轮 remaining
-    "",
-    "After this round, include one plain text line:",
-    "REMAINING: <new remaining instruction after this-round actions>",
-    "or REMAINING: DONE",
-  );
-
-  // 最近失败摘要：若最近一步报错，把错误摘要附在上下文尾部
+  // 最近失败摘要
   const lastEntry = trace[trace.length - 1];
   if (hasToolError(lastEntry.result)) {
     const detail = toContentString(lastEntry.result.content);
     const stripped = detail.replace(SNAPSHOT_REGEX, "").trim();
     if (stripped && stripped.length < 300) {
-      contextParts.push("", "Last error: " + stripped);
+      contextParts.push("", "Error: " + stripped);
     }
   }
 
@@ -378,11 +334,10 @@ export function buildCompactMessages(
   }
 
   if (latestSnapshot) {
-    // 始终注入“最新快照”，并强调无需再调用 page_info 获取页面信息。
+    // 注入最新快照
     contextParts.push(
       "",
-      "## Latest DOM snapshot",
-      "Use hash IDs from this snapshot. Do NOT call page_info — this is already the latest.",
+      "## Snapshot",
       wrapSnapshot(latestSnapshot),
     );
   }

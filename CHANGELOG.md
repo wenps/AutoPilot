@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.0.39
+
+### 变更
+
+- **Prompt 大幅精简**：减少约 40% 的提示词 token 消耗，降低每轮调用成本
+  - `system-prompt.ts`：30+ 条冗长规则压缩为 ~20 条精练规则，Minimal Example 压缩为 1 行
+  - `messages.ts` Round 0：删除与 system prompt 重复的规则，仅保留动态上下文 + 关键行为强化
+  - `messages.ts` Round 1+：删除 14 行重复规则，保留 5 行关键强化提示
+
+- **Effect verification 重新设计**：从 7 行 MANDATORY 段落改为 1 行通用 "Effect check" 规则
+  - 解决模型在效果验证时陷入分析瘧痪（反复推理无法产出工具调用）的问题
+  - system prompt + user message 同步强化，通用覆盖所有动作类型
+
+- **新增规则**：
+  - `snapshot is auto-refreshed`：明确快照自动刷新，减少模型主动调 page_info 的冲动
+  - `Never repeat same tool call`：禁止重复相同工具调用，减少无效轮次
+  - `Do NOT use get_text/get_attr for visible content`：避免冗余读取操作
+  - `Stop: confirmed in snapshot`：停机前必须确认快照中任务已完成
+
+### 文档
+
+- 同步更新 `AGENTS.md`：§4.6 效果验证机制、§5 messages.ts 模块职责
+- 同步更新 `README.md`：Prompt 设计架构 A/B 章节
+- 同步更新 `LOOP_MECHANISM.md`：消息构建描述
+
 ## 0.0.38
 
 ### 新增
