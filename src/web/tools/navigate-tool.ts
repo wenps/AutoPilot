@@ -28,21 +28,21 @@ export function createNavigateTool(): ToolDefinition {
   return {
     name: "navigate",
     description: [
-      "Navigate the current page.",
-      "Actions: goto (open URL), back, forward, reload, scroll (to position or element).",
-      "scroll supports hash ID from snapshot (e.g. #r0) or CSS selector.",
+      "Page navigation tool.",
+      "Actions: goto, back, forward, reload, scroll.",
+      "scroll supports #hashID from snapshot or CSS selector.",
     ].join(" "),
 
     schema: Type.Object({
       action: Type.String({
-        description: "Navigation action: goto | back | forward | reload | scroll",
+        description: "Navigation action name",
       }),
-      url: Type.Optional(Type.String({ description: "URL for goto action" })),
+      url: Type.Optional(Type.String({ description: "URL for goto" })),
       selector: Type.Optional(
-        Type.String({ description: "Element ref ID from snapshot (e.g. #r0) or CSS selector for scroll action" }),
+        Type.String({ description: "#hashID or CSS selector for scroll" }),
       ),
-      x: Type.Optional(Type.Number({ description: "Horizontal scroll position (pixels)" })),
-      y: Type.Optional(Type.Number({ description: "Vertical scroll position (pixels)" })),
+      x: Type.Optional(Type.Number({ description: "Horizontal scroll position" })),
+      y: Type.Optional(Type.Number({ description: "Vertical scroll position" })),
     }),
 
     execute: async (params): Promise<ToolCallResult> => {

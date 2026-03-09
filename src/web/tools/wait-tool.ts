@@ -220,29 +220,29 @@ export function createWaitTool(): ToolDefinition {
   return {
     name: "wait",
     description: [
-      "Wait for DOM changes on the current page.",
-      "Actions: wait_for_selector (element appears), wait_for_hidden (element disappears),",
-      "wait_for_text (specific text appears in page), wait_for_stable (DOM stops changing).",
+      "Wait for page conditions.",
+      "Actions: wait_for_selector, wait_for_hidden, wait_for_text, wait_for_stable.",
+      "wait_for_selector supports attached, visible, hidden, detached.",
     ].join(" "),
 
     schema: Type.Object({
       action: Type.String({
-        description: "Wait action: wait_for_selector | wait_for_hidden | wait_for_text | wait_for_stable",
+        description: "Wait action name",
       }),
       selector: Type.Optional(
-        Type.String({ description: "CSS selector for wait_for_selector/wait_for_hidden" }),
+        Type.String({ description: "Selector for wait_for_selector/wait_for_hidden" }),
       ),
       state: Type.Optional(
-        Type.String({ description: "Selector state for wait_for_selector: attached | visible | hidden | detached (default: attached)" }),
+        Type.String({ description: "Selector state: attached | visible | hidden | detached" }),
       ),
       text: Type.Optional(
-        Type.String({ description: "Text to wait for in wait_for_text" }),
+        Type.String({ description: "Text to wait for" }),
       ),
       timeout: Type.Optional(
-        Type.Number({ description: "Timeout in milliseconds (default: 6000)" }),
+        Type.Number({ description: "Timeout in ms" }),
       ),
       quietMs: Type.Optional(
-        Type.Number({ description: "Quiet window for wait_for_stable in milliseconds (default: 300)" }),
+        Type.Number({ description: "Quiet window in ms" }),
       ),
     }),
 

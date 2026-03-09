@@ -90,6 +90,27 @@ function createBaseRegistry(options?: {
 }
 
 describe("executeAgentLoop golden paths", () => {
+  it("REMAINING: DONE 带尾随说明时也应收敛", async () => {
+    const registry = createBaseRegistry();
+
+    const client = new ScriptedClient([
+      {
+        text: "从当前快照可以看到，城市选择器已经显示\"上海\"。\n\nREMAINING: DONE - 城市选择器已成功选择上海",
+      },
+    ]);
+
+    const result = await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "把城市改成上海",
+    });
+
+    expect(result.reply).toContain("REMAINING: DONE");
+    expect(result.metrics.roundCount).toBe(1);
+    expect(result.toolCalls).toHaveLength(0);
+  });
+
   it("正常完成：可执行工具后返回最终总结", async () => {
     const registry = createBaseRegistry();
     const onMetrics = vi.fn();
@@ -597,5 +618,121 @@ describe("executeAgentLoop golden paths", () => {
     expect(selectorArg).toContain(".ant-spin");
     expect(selectorArg).toContain(".custom-loading");
     expect(selectorArg.match(/\.custom-loading/g)?.length).toBe(1);
+  });
+
+  it("连续无 REMAINING 协议且启发式无法推进：3 轮后强制终止（仅失败或无 DOM 变更时计数）", async () => {
+    // 当工具全部返回错误（模型卡住）且无 REMAINING 协议时，才触发协议缺失终止。
+    // 若工具有成功的 DOM 变更，不计入协议缺失（模型在实质推进）。
+    const registry = createBaseRegistry({
+      domExecute: async () => ({
+        content: "element not interactable",
+        details: { error: true, code: "ELEMENT_ERROR" },
+      }),
+    });
+
+    const client = new ScriptedClient([
+      {
+        text: "弹窗已经打开了，我来查看内容。",
+        toolCalls: [{ id: "1", name: "dom", input: { action: "click", selector: "#btn1" } }],
+      },
+      {
+        text: "让我再确认一下弹窗内容。",
+        toolCalls: [{ id: "2", name: "dom", input: { action: "click", selector: "#btn2" } }],
+      },
+      {
+        assert: ({ messages }) => {
+          const payload = String(messages[messages.length - 1]?.content ?? "");
+          expect(payload).toContain("Protocol reminder");
+          expect(payload).toContain("REMAINING protocol missing");
+        },
+        text: "弹窗内容已查看完毕，任务完成。",
+        toolCalls: [{ id: "3", name: "dom", input: { action: "click", selector: "#btn3" } }],
+      },
+      {
+        text: "不应执行到这里",
+      },
+    ]);
+
+    const result = await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "查看弹窗内容",
+      maxRounds: 10,
+    });
+
+    expect(result.metrics.roundCount).toBe(3);
+    expect(result.reply).toContain("任务完成");
+  });
+
+  it("无 REMAINING 协议但重复相同批次：同批检测不再被启发式失败阻断", async () => {
+    const registry = createBaseRegistry({
+      domExecute: async () => ({ content: "dom ok" }),
+    });
+
+    const client = new ScriptedClient([
+      {
+        text: "弹窗已打开。",
+        toolCalls: [{ id: "1", name: "dom", input: { action: "click", selector: "#same" } }],
+      },
+      {
+        text: "弹窗已打开。",
+        toolCalls: [{ id: "2", name: "dom", input: { action: "click", selector: "#same" } }],
+      },
+      {
+        text: "不应执行到这里",
+      },
+    ]);
+
+    const result = await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "查看弹窗",
+      maxRounds: 10,
+    });
+
+    // 重复批次检测在第 2 轮触发（不再被 roundHasError 阻断）
+    expect(result.metrics.roundCount).toBe(2);
+    expect(result.toolCalls).toHaveLength(1);
+  });
+
+  it("dom.click 强制断轮：click 后同批次后续动作推迟到下一轮", async () => {
+    const domExecute = vi.fn(async (params: Record<string, unknown>) => ({
+      content: `dom:${String(params.action)}`,
+    }));
+
+    const registry = createBaseRegistry({ domExecute });
+    const client = new ScriptedClient([
+      {
+        text: "REMAINING: 填写并提交",
+        toolCalls: [
+          { id: "1", name: "dom", input: { action: "click", selector: "#openDialog" } },
+          { id: "2", name: "dom", input: { action: "fill", selector: "#name", value: "test" } },
+        ],
+      },
+      {
+        text: "REMAINING: DONE",
+        toolCalls: [{ id: "3", name: "dom", input: { action: "fill", selector: "#name", value: "test" } }],
+      },
+      { text: "完成" },
+    ]);
+
+    const result = await executeAgentLoop({
+      client,
+      registry,
+      systemPrompt: "test prompt",
+      message: "打开弹窗并填写",
+      maxRounds: 5,
+    });
+
+    // 第一轮只执行 click（断轮），fill 推迟到第二轮
+    const round1Executed = domExecute.mock.calls.filter(
+      (_, i) => i === 0,
+    );
+    expect(String((round1Executed[0][0] as Record<string, unknown>).action)).toBe("click");
+
+    // 第二轮执行 fill
+    expect(result.toolCalls).toHaveLength(2);
   });
 });

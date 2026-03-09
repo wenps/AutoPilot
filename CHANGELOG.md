@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.0.40
+
+### 新增
+
+- **内置 UI 面板（`web/ui/`）**：
+  - 开箱即用的浮动聊天面板 + 操作遮罩，纯 DOM 实现，零框架依赖
+  - FAB 按钮展开/收起，支持拖拽定位；使用 `@floating-ui/dom` tooltip 风格定位
+  - 实时消息流（用户/AI/工具调用/错误），输入框 + 发送/停止控制
+  - 操作遮罩：自动化执行期间阻止用户操作页面，防止干扰
+  - 通过 `WebAgent` 的 `panel` 选项一行配置启用，或通过 `createPanel()` / `destroyPanel()` 动态管理
+  - 面板与 WebAgent 双向绑定：`onSend → agent.chat()`，`callbacks → 面板消息流 & 状态`
+  - 从 `agentpage` 包统一导出 `Panel` 类与 `PanelOptions` 类型
+
+- **AI 请求超时与重试**：
+  - `AIClientConfig` 新增 `requestTimeoutMs`（默认 45000ms）和 `parallelToolCalls`（默认 true）配置项
+  - OpenAI 客户端新增 `fetchWithTimeout` + AbortController 超时机制
+  - JSON（非流式）模式超时后自动重试 1 次，避免因单次网络抖动中断任务
+
+- **协议缺失容忍机制**：
+  - 当模型不遵循 REMAINING 协议但有成功的 DOM 变更时，不计入协议缺失计数（视为实质推进）
+  - 仅在本轮工具全部失败或无 DOM 变更时才累计计数，连续 3 轮后强制终止
+  - 连续 2 轮协议缺失时注入 Protocol reminder 提示，兼容 DeepSeek 等不严格遵循协议的模型
+
+- **`dom.click` 强制断轮**：
+  - click 动作执行后立即断轮，同批次后续动作推迟到下一轮
+  - 确保每轮最多一次 click（作为批次末尾），降低因 DOM 变化导致的后续动作失败
+
+- **快照文本聚合**：
+  - 无交互后代的布局子树自动合并所有叶子文本为一行（`hasInteractiveDescendant` + `collectLeafTexts`）
+  - 纯文本布局标签简化：无 hash、无子输出的布局标签只输出文本内容，去掉无意义的标签外壳
+  - 移除 `collapsed-group` 括号分组，链式坍塌改为扁平提升，减少快照嵌套层级
+
+- **快照 listener 事件白名单**：
+  - `SnapshotOptions` 新增 `listenerEvents` 字段，支持自定义快照输出的事件类型
+  - `buildSystemPrompt` 同步支持 `listenerEvents`，动态生成 Listener Abbrevs 表
+  - 默认仅输出 9 种高价值事件（click/input/change/mousedown/pointerdown/keydown/submit/focus/blur）
+
+- **多场景 Demo 页面**：
+  - 新增 8 个路由独立页面（变更发布/供应商入驻/客户新建/应用开通/对账批次/工单升级/权限模板/总览）
+
+### 变更
+
+- **Prompt 规则重构**：
+  - 批量执行规则改为"fill/type 自由批量，click 结束当前轮次，每轮最多一次 click 放在最后"
+  - 新增"语义完成"规则（Semantic completion）：所有未解决的用户约束必须保留在 Remaining 中，直到快照可见确认
+  - 新增"不压缩 Remaining"规则：禁止将 Remaining 压缩为丢失实体/值/数量/筛选条件/目标的模糊外壳动作
+  - 新增"前置条件检查"规则：执行推进/完成动作前，先确认前置约束在快照中已满足
+  - 新增"中间进度不等于完成"规则：打开/展开/筛选/翻页/切换上下文等中间动作不算任务完成
+  - 下拉策略细化：原生 `select_option` 一轮完成；自定义下拉需 click 打开 → 下一轮 → click 选项
+  - 搜索/筛选输入：fill 后需 press Enter 或 click 搜索按钮触发搜索
+  - system prompt 不再包含工具列表章节（工具描述由 provider 协议传递）
+
+- **五大工具描述精简**：
+  - `dom`、`navigate`、`page_info`、`wait`、`evaluate` 工具描述和 schema description 大幅压缩
+  - 移除重复性指导文本，仅保留能力枚举与关键约束，降低 tool schema token 消耗
+
+- **REMAINING 协议解析增强**：
+  - `parseRemainingInstruction` 改为按行从后往前搜索最后一个 `REMAINING:` 行
+  - 兼容 `REMAINING: DONE - 总结文本` / `REMAINING: DONE: xxx` 等尾随说明写法
+
+- **WebAgent 初始快照不再注入 system prompt**：
+  - 首轮快照作为 `initialSnapshot` 传入 agent-loop，由消息层统一管理，不再拼入 system prompt 文本
+
+- **快照跳过标签扩充**：
+  - 新增 `COLGROUP` / `COL` 到 SKIP_TAGS，减少表格结构噪音
+
+### 测试
+
+- 新增 `openai.test.ts`：覆盖 `parallel_tool_calls` 默认值、显式配置、JSON 模式超时重试
+- 新增 agent-loop 测试用例：
+  - `REMAINING: DONE` 带尾随说明时收敛
+  - 连续无 REMAINING 协议且启发式无法推进时 3 轮后终止（仅失败轮计数）
+  - 无 REMAINING 但重复批次时正确触发同批检测
+  - `dom.click` 强制断轮：click 后同批次 fill 推迟到下一轮
+
+### 文档
+
+- 同步更新 `AGENTS.md`：补充 §4.3 协议缺失容忍、UI 面板模块职责、目录结构
+- 同步更新 `LOOP_MECHANISM.md`：新增 §4.3 协议缺失容忍、更新停机条件描述
+
 ## 0.0.39
 
 ### 变更

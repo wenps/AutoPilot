@@ -31,6 +31,40 @@ type OpenAIRawResponse = {
   };
 };
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 45000;
+const JSON_TIMEOUT_RETRY_COUNT = 1;
+
+function isRequestTimeoutError(error: unknown): boolean {
+  return error instanceof Error && /^AI request timeout \(\d+ms\)$/.test(error.message);
+}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return fetch(input, init);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`AI request timeout (${timeoutMs}ms)`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── OpenAIClient 类 ───
 
 /**
@@ -46,29 +80,42 @@ export class OpenAIClient extends BaseAIClient {
       chatHandler: async (params: ChatHandlerParams): Promise<AIChatResponse> => {
         const req = buildOpenAIRequest(this.config, params);
         const useStream = this.config.stream ?? true;
+        const requestTimeoutMs = this.config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
         if (!useStream) {
-          const res = await fetch(req.url, {
-            method: req.method,
-            headers: req.headers,
-            body: req.body,
-          });
+          let lastError: unknown;
 
-          if (!res.ok) {
-            const errText = await res.text();
-            throw new Error(`AI API ${res.status}: ${errText.slice(0, 500)}`);
+          for (let attempt = 0; attempt <= JSON_TIMEOUT_RETRY_COUNT; attempt++) {
+            try {
+              const res = await fetchWithTimeout(req.url, {
+                method: req.method,
+                headers: req.headers,
+                body: req.body,
+              }, requestTimeoutMs);
+
+              if (!res.ok) {
+                const errText = await res.text();
+                throw new Error(`AI API ${res.status}: ${errText.slice(0, 500)}`);
+              }
+
+              const data = await res.json();
+              return parseOpenAIResponse(data);
+            } catch (error) {
+              lastError = error;
+              const shouldRetry = attempt < JSON_TIMEOUT_RETRY_COUNT && isRequestTimeoutError(error);
+              if (!shouldRetry) throw error;
+            }
           }
 
-          const data = await res.json();
-          return parseOpenAIResponse(data);
+          throw lastError instanceof Error ? lastError : new Error("AI request failed");
         }
 
         // 流式模式：请求体已在 buildOpenAIRequest 中包含 stream 字段
-        const streamRes = await fetch(req.url, {
+        const streamRes = await fetchWithTimeout(req.url, {
           method: req.method,
           headers: req.headers,
           body: req.body,
-        });
+        }, requestTimeoutMs);
 
         if (!streamRes.ok) {
           const errText = await streamRes.text();
@@ -129,7 +176,7 @@ export function buildOpenAIRequest(
   if (openaiTools && openaiTools.length > 0) {
     body.tools = openaiTools;
     body.tool_choice = "auto";
-    body.parallel_tool_calls = true;
+    body.parallel_tool_calls = config.parallelToolCalls ?? true;
   }
 
   return {

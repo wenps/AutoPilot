@@ -16,24 +16,85 @@
  * - `agent-loop/index.ts` 在循环启动时调用 `buildSystemPrompt()` 构建系统消息
  * - `web/index.ts` 的 WebAgent 通过 systemPrompt 配置传入额外指令
  */
-import type { ToolDefinition } from "./tool-registry.js";
-
 /**
  * 系统提示词构建参数。
  *
  * 所有字段可选：
- * - tools：当前注册的工具列表，用于生成 "## Available Tools" 章节
  * - thinkingLevel：AI 思考深度标签（如 "high"/"medium"），影响推理行为
+ * - listenerEvents：快照中实际会输出的 listener 事件集合，用于同步缩写说明
  * - extraInstructions：额外英文指令，追加到 "## Extra Instructions" 章节
  */
 export type SystemPromptParams = {
-  /** 已注册工具列表。 */
-  tools?: ToolDefinition[];
   /** AI 思考深度标签。 */
   thinkingLevel?: string;
+  /** 允许在 Listener Abbrevs 中输出的事件白名单。 */
+  listenerEvents?: string[];
   /** 额外英文指令（字符串或字符串数组）。 */
   extraInstructions?: string | string[];
 };
+
+const LISTENER_ABBREV_MAP: Record<string, string> = {
+  click: "clk",
+  dblclick: "dbl",
+  mousedown: "mdn",
+  mouseup: "mup",
+  mousemove: "mmv",
+  mouseover: "mov",
+  mouseout: "mot",
+  mouseenter: "men",
+  mouseleave: "mlv",
+  pointerdown: "pdn",
+  pointerup: "pup",
+  pointermove: "pmv",
+  touchstart: "tst",
+  touchend: "ted",
+  keydown: "kdn",
+  keyup: "kup",
+  input: "inp",
+  change: "chg",
+  submit: "sub",
+  focus: "fcs",
+  blur: "blr",
+  scroll: "scl",
+  wheel: "whl",
+  drag: "drg",
+  dragstart: "drs",
+  dragend: "dre",
+  drop: "drp",
+  contextmenu: "ctx",
+};
+
+const DEFAULT_SYSTEM_PROMPT_LISTENER_EVENTS = [
+  "click",
+  "input",
+  "change",
+  "mousedown",
+  "pointerdown",
+  "keydown",
+  "submit",
+  "focus",
+  "blur",
+];
+
+function buildListenerAbbrevLine(listenerEvents?: string[]): string {
+  const allowed = (listenerEvents && listenerEvents.length > 0)
+    ? listenerEvents
+    : DEFAULT_SYSTEM_PROMPT_LISTENER_EVENTS;
+
+  const normalized = allowed
+    .map(event => event.trim().toLowerCase())
+    .filter(Boolean);
+
+  const unique = [...new Set(normalized)];
+  const pairs = unique
+    .map(event => {
+      const abbrev = LISTENER_ABBREV_MAP[event];
+      return abbrev ? `${abbrev}=${event}` : null;
+    })
+    .filter((pair): pair is string => !!pair);
+
+  return pairs.join(" ");
+}
 
 /**
  * 规范化额外指令：统一转为非空字符串数组。
@@ -69,11 +130,9 @@ function normalizeExtraInstructions(input?: string | string[]): string[] {
  * 3. **Output Contract** — 输出协议
  *    - 每轮返回工具调用 + REMAINING 文本行
  *
- * 4. **Available Tools**（可选） — 当前注册的工具及描述
+ * 4. **Reasoning Profile**（可选） — 思考深度配置
  *
- * 5. **Reasoning Profile**（可选） — 思考深度配置
- *
- * 6. **Extra Instructions**（可选） — 用户自定义额外指令
+ * 5. **Extra Instructions**（可选） — 用户自定义额外指令
  *
  * @param params - 构建参数（工具列表、思考深度、额外指令）
  * @returns 完整的系统提示词字符串（英文）
@@ -97,19 +156,21 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
 
       "- Bracket tag may show ARIA role ([combobox], [slider]) as primary interaction hint.",
       "- listeners=\"...\" = bound event handlers (abbrevs below). Prefer targets with matching listeners.",
-      "- Click priority: clk/pdn/mdn, onclick, native link/button, role=button/link. Avoid focus/hover-only (fcs/blr/men/mlv only).",
+      "- Click priority: clk/pdn/mdn, onclick, native link/button, role=button/link. Avoid focus-only or hover-only signals.",
       "- No-effect fallback: try nearest actionable sibling/ancestor in same semantic group instead of repeating.",
 
-      "- Batch all independent visible actions per round. Build minimal action array. Complete all form fields together.",
+      "- Batch fill/type/check/select_option freely within one round. A click always ends the round — send at most ONE click as the LAST action in a batch.",
       "- Input order (MANDATORY): focus/click → fill/type/select_option per target. Multi-field: focus A→fill A→focus B→fill B.",
+      "- Search/filter inputs: after fill, press Enter (or click search button) to trigger the search. Do not assume fill alone submits.",
       "- Do NOT run focus-only batches. Each focus must be immediately followed by its fill/type/select_option.",
 
       "- Steppers: compute delta from visible value, click exactly |delta| times. Check/uncheck: target real input control.",
-      "- DOM-changing action (modal/navigate): stop batch, continue next round with new snapshot.",
+      "- DOM-changing action (click/modal/navigate): ends the round, next snapshot follows. Actions sent after a click in the same batch are discarded.",
+      "- Intermediate progress is NOT completion: if an action only opens, expands, reveals, filters, paginates, switches context, or loads the next step, keep REMAINING on the final user goal until the requested end state/value/content is visible in the snapshot.",
       "- Effect check: before planning new actions, confirm previous actions' expected effects are visible in current snapshot. If not, the action failed — try a different target instead of repeating.",
       "- Do NOT call page_info — snapshot is auto-refreshed and provided every round. Do NOT use get_text/get_attr to read what is already visible in the snapshot.",
       "- Never repeat the same tool call (same name + same args) on the same target. If it didn't work, try a different approach.",
-      "- Dropdown/select: use dom.select_option or fill.",
+      "- Dropdown/select: prefer dom.select_option (works in one round). For custom dropdowns requiring click-to-open: click → wait for next snapshot → click option (two rounds).",
       "- Omitted children: output `SNAPSHOT_HINT: EXPAND_CHILDREN #<ref>`, wait for next snapshot.",
       "- Do NOT verify values unless user explicitly asks.",
       "- Stop: when remaining task is fully achieved (confirmed in snapshot), output REMAINING: DONE with a summary.",
@@ -118,7 +179,7 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
 
       // ─── 事件简写对照表 ───
       "## Listener Abbrevs",
-      "clk=click dbl=dblclick mdn=mousedown mup=mouseup mmv=mousemove mov=mouseover mot=mouseout men=mouseenter mlv=mouseleave pdn=pointerdown pup=pointerup pmv=pointermove tst=touchstart ted=touchend kdn=keydown kup=keyup inp=input chg=change sub=submit fcs=focus blr=blur scl=scroll whl=wheel drg=drag drs=dragstart dre=dragend drp=drop ctx=contextmenu",
+      buildListenerAbbrevLine(params.listenerEvents),
       "",
       // ─── 输出协议 + 极简示例 ───
       "## Output",
@@ -127,19 +188,7 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
     ].join("\n"),
   );
 
-  // ─── 章节 5（可选）：工具列表 ───
-  // 列出当前注册的所有工具及其描述，供 AI 选择使用。
-  const tools = params.tools ?? [];
-  if (tools.length > 0) {
-    const toolLines = tools.map(t => `- **${t.name}**: ${t.description}`);
-    sections.push(
-      "## Available Tools\n\n" +
-      toolLines.join("\n") + "\n\n" +
-      "Use tools when needed to complete the user's request."
-    );
-  }
-
-  // ─── 章节 6（可选）：思考深度配置 ───
+  // ─── 章节 4（可选）：思考深度配置 ───
   // 影响模型的推理深度（如 "high" 表示复杂任务需深度思考）。
   if (params.thinkingLevel) {
     sections.push(
@@ -150,7 +199,7 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
     );
   }
 
-  // ─── 章节 7（可选）：额外自定义指令 ───
+  // ─── 章节 5（可选）：额外自定义指令 ───
   // 由 WebAgent 使用方通过 extraInstructions 配置传入。
   // 典型用途：业务特定规则、UI 框架提示、测试场景约束等。
   const extraInstructions = normalizeExtraInstructions(params.extraInstructions);

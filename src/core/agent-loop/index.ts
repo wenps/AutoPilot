@@ -24,8 +24,8 @@
  *      │
  *      ├─ 更新 remaining（优先协议，缺失时启发式剔除）
  *      │
- *      ├─ 防空转 / 防自转检查
- *      │    └─ 连续只读或重复批次会触发停机
+ *      ├─ 防空转 / 防自转 / 防协议缺失检查
+ *      │    └─ 连续只读、重复批次、连续无协议均会触发停机
  *      │
  *      ├─ 刷新快照
  *      ▼
@@ -139,6 +139,7 @@ export async function executeAgentLoop(
   // 循环控制状态
   let consecutiveSnapshotCalls = 0;
   let consecutiveReadOnlyRounds = 0;
+  let consecutiveNoProtocolRounds = 0;
   let usedRounds = 0;
 
   // token 统计
@@ -340,6 +341,7 @@ export async function executeAgentLoop(
 
     // 没有工具调用：若处于找不到重试流程，先等待再重试；否则正常结束
     if (!response.toolCalls || response.toolCalls.length === 0) {
+      consecutiveNoProtocolRounds = 0; // 非工具轮打断协议缺失计数
       if (pendingNotFoundRetry) {
         const unresolvedHint = response.text?.toLowerCase() ?? "";
         const stillUnresolved =
@@ -528,12 +530,20 @@ export async function executeAgentLoop(
     // 将本轮执行状态传给下一轮上下文。
     if (parsedInstructionState.hasRemainingProtocol) {
       remainingInstruction = parsedInstructionState.nextInstruction;
+      consecutiveNoProtocolRounds = 0;
     } else {
       const nextByHeuristic = reduceRemainingHeuristically(remainingInstruction, executedTaskCalls.length);
       if (nextByHeuristic !== remainingInstruction) {
         remainingInstruction = nextByHeuristic;
-      } else {
-        roundHasError = true;
+        consecutiveNoProtocolRounds = 0;
+      } else if (executedTaskCalls.length > 0) {
+        // 模型执行了工具但未遵循 REMAINING 协议且启发式无法推进。
+        // 若本轮有成功的 DOM 变更（click/fill 等），说明任务在实质推进，
+        // 不累计协议缺失计数，避免因模型不遵循 REMAINING 协议而过早停机。
+        // 仅在本轮全部失败或无 DOM 变更时才累计，防止真正的空转。
+        if (!roundHasPotentialDomMutation || roundHasError) {
+          consecutiveNoProtocolRounds += 1;
+        }
       }
     }
 
@@ -556,7 +566,21 @@ export async function executeAgentLoop(
       break;
     }
 
-    // 保护 5：空转检测
+    // 保护 5：防协议缺失空转 — 连续多轮有工具调用但无 REMAINING 协议且启发式无法推进
+    if (consecutiveNoProtocolRounds >= 3) {
+      finalReply = response.text?.trim() || "任务已完成。";
+      if (finalReply) callbacks?.onText?.(finalReply);
+      break;
+    }
+    if (consecutiveNoProtocolRounds >= 2) {
+      protocolViolationHint = [
+        "Protocol reminder: REMAINING protocol missing for 2+ rounds with tool calls.",
+        "You MUST include REMAINING: <text> or REMAINING: DONE in every response.",
+        "If the task is fully complete, return REMAINING: DONE with no tool calls.",
+      ].join("\n");
+    }
+
+    // 保护 6：空转检测
     const attemptedTaskCalls = response.toolCalls.map(tc => ({ name: tc.name, input: tc.input }));
     const idleResult = detectIdleLoop(attemptedTaskCalls, consecutiveReadOnlyRounds);
     if (idleResult === -1) {

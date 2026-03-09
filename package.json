@@ -1,6 +1,6 @@
 {
   "name": "agentpage",
-  "version": "0.0.39",
+  "version": "0.0.40",
   "description": "Embeddable AI Agent SDK for browsers — let AI operate your web pages via tool-calling",
   "keywords": [
     "ai",

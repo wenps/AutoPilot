@@ -38,6 +38,10 @@ export type AIClientConfig = {
   baseURL?: string;
   /** 是否启用流式输出（SSE）。默认 true；传 false 时使用 JSON 非流式响应。 */
   stream?: boolean;
+  /** 单次请求超时（毫秒，默认 45000；<=0 表示不设置超时）。 */
+  requestTimeoutMs?: number;
+  /** 是否允许模型并行返回多个工具调用（默认 true）。 */
+  parallelToolCalls?: boolean;
 };
 
 /** 统一 chat 入参（中）/ Unified chat parameters (EN). */

@@ -58,6 +58,12 @@ export type SnapshotOptions = {
   expandChildrenRefs?: string[];
   /** 对 expandChildrenRefs 节点生效的子节点上限（默认 120）。 */
   expandedChildrenLimit?: number;
+  /**
+   * 快照中允许输出的 listener 事件白名单（默认仅输出常用事件）。
+   * 例如：['click', 'input', 'change', 'mousedown']。
+   * 仅影响 `listeners="..."` 文本输出，不影响内部交互判定与 hash 分配。
+   */
+  listenerEvents?: string[];
 };
 
 /** 快照属性值最大保留长度（超出截断）。 */
@@ -66,6 +72,18 @@ const MAX_SNAPSHOT_ATTR_VALUE_LENGTH = 120;
 const MAX_EXPANDED_LIST_CHILDREN = 120;
 /** 定向放宽 children 的硬上限。 */
 const MAX_EXPANDED_CHILDREN_LIMIT = 300;
+/** 快照默认保留的高价值 listener 事件（控制 token 体积）。 */
+const DEFAULT_SNAPSHOT_LISTENER_EVENTS = [
+  "click",
+  "input",
+  "change",
+  "mousedown",
+  "pointerdown",
+  "keydown",
+  "submit",
+  "focus",
+  "blur",
+];
 
 /** 事件名 → 快照简写映射（压缩 token）。 */
 const EVENT_ABBREV: Record<string, string> = {
@@ -84,6 +102,10 @@ const EVENT_ABBREV: Record<string, string> = {
 
 function abbrevEvent(name: string): string {
   return EVENT_ABBREV[name] ?? name.slice(0, 3);
+}
+
+function normalizeSnapshotListenerEvent(name: string): string {
+  return name.trim().toLowerCase();
 }
 
 /**
@@ -161,6 +183,13 @@ export function generateSnapshot(
       .map(ref => ref.trim().replace(/^#/, ""))
       .filter(Boolean),
   );
+  const allowedListenerEvents = new Set(
+    (opts.listenerEvents && opts.listenerEvents.length > 0
+      ? opts.listenerEvents
+      : DEFAULT_SNAPSHOT_LISTENER_EVENTS)
+      .map(normalizeSnapshotListenerEvent)
+      .filter(Boolean),
+  );
 
   let emittedNodes = 0;
   let truncatedByNodeBudget = false;
@@ -169,6 +198,7 @@ export function generateSnapshot(
 
   const SKIP_TAGS = new Set([
     "SCRIPT", "STYLE", "SVG", "NOSCRIPT", "LINK", "META", "BR", "HR",
+    "COLGROUP", "COL",
   ]);
 
   /** 纯布局容器标签 — 智能剪枝时可能被折叠 */
@@ -291,6 +321,12 @@ export function generateSnapshot(
     const tracked = getTrackedElementEvents(el);
     if (tracked.length === 0) return false;
     return tracked.some(name => INTERACTIVE_EVENTS.has(name));
+  }
+
+  function getSnapshotListenerEvents(el: Element): string[] {
+    const tracked = getTrackedElementEvents(el);
+    if (tracked.length === 0) return [];
+    return tracked.filter(name => allowedListenerEvents.has(normalizeSnapshotListenerEvent(name)));
   }
 
   function getTrackedEventPriorityScore(el: Element): number {
@@ -417,6 +453,41 @@ export function generateSnapshot(
     return nextLimit;
   }
 
+  /**
+   * 判断元素或其任何后代是否为交互节点（需要 hash ID）。
+   * 用于文本聚合判定：子树无交互后代时可安全合并叶文本。
+   */
+  function hasInteractiveDescendant(el: Element): boolean {
+    if (needsHashId(el)) return true;
+    for (const child of Array.from(el.children)) {
+      if (hasInteractiveDescendant(child)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 深度收集元素子树中所有叶子文本节点的内容。
+   * 跳过 SKIP_TAGS 和不可见元素，用于透明容器的文本聚合。
+   */
+  function collectLeafTexts(el: Element, maxLen: number): string[] {
+    const texts: string[] = [];
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const t = node.textContent?.trim();
+        if (t) texts.push(t.slice(0, maxLen));
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        const child = node as Element;
+        if (SKIP_TAGS.has(child.tagName.toUpperCase())) continue;
+        try {
+          const s = window.getComputedStyle(child);
+          if (s.display === "none" || s.visibility === "hidden") continue;
+        } catch { continue; }
+        texts.push(...collectLeafTexts(child, maxLen));
+      }
+    }
+    return texts;
+  }
+
   function walk(el: Element, depth: number, parentPath: string): string {
     if (emittedNodes >= maxNodes) {
       truncatedByNodeBudget = true;
@@ -424,7 +495,7 @@ export function generateSnapshot(
     }
 
     if (depth > maxDepth) return "";
-    if (SKIP_TAGS.has(el.tagName)) return "";
+    if (SKIP_TAGS.has(el.tagName.toUpperCase())) return "";
 
     // 跳过标记为 autopilot 内部 UI 的元素（避免 AI 操作自身界面）
     if (el.hasAttribute("data-autopilot-ignore")) return "";
@@ -463,7 +534,7 @@ export function generateSnapshot(
     const elId = el.getAttribute("id");
     if (elId) attrs.push(`id="${elId}"`);
 
-    // 2. class — 只保留第 1 个有语义的类名（大幅减少 token）
+    // 2. class — 保留第 1 个有语义的类名（不论交互与否，class 对 AI 识别元素语义有价值）
     const className = el.getAttribute("class")?.trim();
     if (className) {
       const cls = className.split(/\s+/)
@@ -499,7 +570,7 @@ export function generateSnapshot(
     if (el.hasAttribute("onclick")) attrs.push("onclick");
 
     // 5.1 运行时事件绑定（addEventListener 追踪）
-    const trackedEvents = getTrackedElementEvents(el);
+    const trackedEvents = getSnapshotListenerEvents(el);
     if (trackedEvents.length > 0) {
       const preview = trackedEvents.slice(0, 6).map(abbrevEvent).join(",");
       const suffix = trackedEvents.length > 6 ? ",..." : "";
@@ -546,12 +617,23 @@ export function generateSnapshot(
     }
     directText = directText.trim();
 
-    // ─── 智能剪枝 ───
-    // 无意义布局容器：默认不输出自身行，直接将子元素提升到当前层级。
-    // 若提升后同层出现多个孩子（如 a 与 b(c) 折叠成 a 与 c），
-    // 则输出括号分组块，显式保留这些节点的关联来源。
+    // ─── 智能剪枝（链式坍塌） ───
+    // 无意义布局容器不输出自身行，子内容直接提升到当前层级。
+    // 若子树无任何交互后代，则合并所有叶文本为一行（文本聚合）。
     if (isEmptyLayoutContainer(el, directText)) {
       const allChildren = Array.from(el.children);
+
+      // 文本聚合：子树无交互后代时，合并所有叶子文本为一行
+      if (!allChildren.some(c => hasInteractiveDescendant(c))) {
+        const texts = collectLeafTexts(el, maxTextLength);
+        if (texts.length > 0) {
+          emittedNodes++;
+          return `${indent}"${texts.join(" · ").slice(0, maxTextLength * 3)}"`;
+        }
+        return "";
+      }
+
+      // 链式穿透：有交互后代时，子内容直接提升（不输出 collapsed-group）
       const orderedChildren = orderChildrenByPriority(allChildren);
       const childLimit = resolveChildLimit(el, maxChildren, hashId);
       const selectedChildren = orderedChildren.slice(0, childLimit);
@@ -569,24 +651,11 @@ export function generateSnapshot(
         return "";
       }
 
-      const shouldGroupCollapsedChildren = childBlocks.length >= 2 || omittedChildren > 0;
-      if (!shouldGroupCollapsedChildren) {
-        return childBlocks.join("\n");
-      }
-
-      const groupLines: string[] = [
-        `${"  ".repeat(depth)}([${displayTag}] collapsed-group`,
-      ];
-      for (const block of childBlocks) {
-        groupLines.push(indentMultiline(block, 1));
-      }
-
+      let result = childBlocks.join("\n");
       if (omittedChildren > 0) {
-        groupLines.push(`${"  ".repeat(depth + 1)}... (${omittedChildren} children omitted)`);
+        result += `\n${indent}... (${omittedChildren} children omitted)`;
       }
-
-      groupLines.push(`${"  ".repeat(depth)})`);
-      return groupLines.join("\n");
+      return result;
     }
 
     // 构建当前元素描述：[显示标签] "文本" 属性 #hashID（仅交互节点）
@@ -616,6 +685,12 @@ export function generateSnapshot(
 
     if (omittedChildren > 0) {
       lines.push(`${indent}  ... (${omittedChildren} children omitted)`);
+    }
+
+    // 纯文本布局标签简化：无 hashId、无子输出的布局标签只输出文本
+    // 例如 [div] "租户" → "租户"，去掉无意义的标签外壳
+    if (!hashId && LAYOUT_TAGS.has(el.tagName) && directText && lines.length === 1) {
+      return `${indent}"${directText.slice(0, maxTextLength)}"`;
     }
 
     return lines.join("\n");
@@ -675,45 +750,46 @@ export function createPageInfoTool(): ToolDefinition {
   return {
     name: "page_info",
     description: [
-      "Get information about the current page.",
-      "Actions: get_url, get_title, get_selection (selected text),",
-      "get_viewport (size & scroll), snapshot (DOM structure), query_all (find all matching elements).",
+      "Page information tool.",
+      "Actions: get_url, get_title, get_selection, get_viewport, snapshot, query_all.",
     ].join(" "),
 
     schema: Type.Object({
       action: Type.String({
-        description:
-          "Info action: get_url | get_title | get_selection | get_viewport | snapshot | query_all",
+        description: "Page info action name",
       }),
       selector: Type.Optional(
-        Type.String({ description: "CSS selector for query_all action" }),
+        Type.String({ description: "CSS selector for query_all" }),
       ),
       maxDepth: Type.Optional(
-        Type.Number({ description: "Max depth for snapshot (default: 12)" }),
+        Type.Number({ description: "Snapshot max depth" }),
       ),
       viewportOnly: Type.Optional(
-        Type.Boolean({ description: "Only snapshot elements visible in viewport (default: true)" }),
+        Type.Boolean({ description: "Snapshot only visible elements" }),
       ),
       pruneLayout: Type.Optional(
-        Type.Boolean({ description: "Collapse empty layout containers like div/span (default: true)" }),
+        Type.Boolean({ description: "Collapse empty layout containers" }),
       ),
       maxNodes: Type.Optional(
-        Type.Number({ description: "Maximum nodes to include in snapshot (default: 220)" }),
+        Type.Number({ description: "Snapshot max nodes" }),
       ),
       maxChildren: Type.Optional(
-        Type.Number({ description: "Maximum children per element (default: 25)" }),
+        Type.Number({ description: "Snapshot max children per node" }),
       ),
       maxTextLength: Type.Optional(
-        Type.Number({ description: "Maximum text length per node (default: 40)" }),
+        Type.Number({ description: "Snapshot max text length" }),
       ),
       expandOptionLists: Type.Optional(
-        Type.Boolean({ description: "Expand option-list containers to avoid child truncation (default: false)" }),
+        Type.Boolean({ description: "Expand option/list containers" }),
       ),
       expandChildrenRefs: Type.Optional(
-        Type.Array(Type.String({ description: "Hash refs to expand child truncation for (e.g. #abc123)" })),
+        Type.Array(Type.String({ description: "#hashIDs to expand children for" })),
       ),
       expandedChildrenLimit: Type.Optional(
-        Type.Number({ description: "Child limit for expandChildrenRefs nodes (default: 120, max: 300)" }),
+        Type.Number({ description: "Expanded child limit" }),
+      ),
+      listenerEvents: Type.Optional(
+        Type.Array(Type.String({ description: "Snapshot listener event whitelist" })),
       ),
     }),
 
@@ -763,6 +839,9 @@ export function createPageInfoTool(): ToolDefinition {
             const expandedChildrenLimit = typeof params.expandedChildrenLimit === "number"
               ? params.expandedChildrenLimit as number
               : undefined;
+            const listenerEvents = Array.isArray(params.listenerEvents)
+              ? (params.listenerEvents as unknown[]).filter((event): event is string => typeof event === "string")
+              : undefined;
             const snapshot = generateSnapshot(document.body, {
               maxDepth,
               viewportOnly,
@@ -773,6 +852,7 @@ export function createPageInfoTool(): ToolDefinition {
               expandOptionLists,
               expandChildrenRefs,
               expandedChildrenLimit,
+              listenerEvents,
               refStore: getActiveRefStore(),
             });
             return { content: snapshot };

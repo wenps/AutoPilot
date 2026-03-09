@@ -68,15 +68,13 @@ export function createEvaluateTool(): ToolDefinition {
   return {
     name: "evaluate",
     description: [
-      "Execute JavaScript code in the current page context.",
-      "Use this when other tools cannot accomplish the task.",
-      "Can access document, window, and all page APIs.",
+      "Execute JavaScript in page context.",
+      "Use when other tools are insufficient; can access document and window.",
     ].join(" "),
 
     schema: Type.Object({
       expression: Type.String({
-        description:
-          "JavaScript expression or code block to execute. Has access to document, window, etc.",
+        description: "JavaScript expression or code block to execute.",
       }),
     }),
 

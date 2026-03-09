@@ -32,12 +32,11 @@ import {
   type AgentLoopCallbacks,
   type AgentLoopResult,
   type RoundStabilityWaitOptions,
-  wrapSnapshot,
 } from "../core/agent-loop/index.js";
 import type { AIMessage } from "../core/types.js";
 import { createAIClient } from "../core/ai-client/index.js";
 import type { AIClient } from "../core/types.js";
-import { ToolRegistry, type ToolDefinition } from "../core/tool-registry.js";
+import { ToolRegistry, type ToolDefinition, type ToolCallResult } from "../core/tool-registry.js";
 import { buildSystemPrompt } from "../core/system-prompt.js";
 import { generateSnapshot, type SnapshotOptions } from "./tools/page-info-tool.js";
 import { createDomTool, setActiveRefStore } from "./tools/dom-tool.js";
@@ -47,6 +46,7 @@ import { createWaitTool } from "./tools/wait-tool.js";
 import { createEvaluateTool } from "./tools/evaluate-tool.js";
 import { RefStore } from "./ref-store.js";
 import { installEventListenerTracking } from "./event-listener-tracker.js";
+import Panel, { type PanelOptions } from "./ui/index.js";
 
 // 默认安装全局事件监听追踪（幂等），用于快照输出 listeners 信号。
 installEventListenerTracking();
@@ -84,6 +84,8 @@ export type WebAgentOptions = {
   baseURL?: string;
   /** 是否启用流式输出（SSE）。默认 true；false 时使用 JSON 非流式响应。 */
   stream?: boolean;
+  /** 单次 AI 请求超时（毫秒，默认 45000；<=0 表示不设置超时）。 */
+  requestTimeoutMs?: number;
   /** 是否启用干运行模式 */
   dryRun?: boolean;
   /**
@@ -102,6 +104,13 @@ export type WebAgentOptions = {
   snapshotOptions?: SnapshotOptions;
   /** 轮次后稳定等待（加载态 + DOM 静默）配置 */
   roundStabilityWait?: RoundStabilityWaitOptions;
+  /**
+   * UI 面板配置。
+   * - true：使用默认配置创建面板
+   * - PanelOptions：使用自定义配置创建面板
+   * - false / undefined：不创建面板
+   */
+  panel?: boolean | PanelOptions;
 };
 
 // ─── WebAgent 类 ───
@@ -119,6 +128,7 @@ export class WebAgent {
   private model: string;
   private baseURL?: string;
   private stream: boolean;
+  private requestTimeoutMs: number;
   private dryRun: boolean;
   private maxRounds: number;
   /** system prompt 注册表（key -> prompt 文本）。 */
@@ -140,6 +150,9 @@ export class WebAgent {
   /** 工具注册表实例 — 每个 WebAgent 拥有独立的工具集 */
   private registry = new ToolRegistry();
 
+  /** 内置 UI 面板（通过 options.panel 配置启用） */
+  panel: Panel | null = null;
+
   /** 事件回调 — 绑定后可实时获取 Agent 进度，用于 UI 展示 */
   callbacks: WebAgentCallbacks = {};
 
@@ -150,6 +163,7 @@ export class WebAgent {
     this.model = options.model ?? "gpt-4o";
     this.baseURL = options.baseURL;
     this.stream = options.stream ?? true;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 45000;
     this.dryRun = options.dryRun ?? false;
     this.maxRounds = options.maxRounds ?? 40;
     this.memory = options.memory ?? false;
@@ -161,6 +175,13 @@ export class WebAgent {
       this.setSystemPrompt(options.systemPrompt);
     } else if (options.systemPrompt && typeof options.systemPrompt === "object") {
       this.setSystemPrompts(options.systemPrompt);
+    }
+
+    // ─── UI 面板 ───
+    if (options.panel) {
+      const panelOpts = typeof options.panel === "object" ? options.panel : {};
+      this.panel = new Panel(panelOpts);
+      this.wirePanel();
     }
   }
 
@@ -261,6 +282,16 @@ export class WebAgent {
     return this.stream;
   }
 
+  /** 设置单次 AI 请求超时（毫秒） */
+  setRequestTimeoutMs(timeoutMs: number): void {
+    this.requestTimeoutMs = Math.floor(timeoutMs);
+  }
+
+  /** 获取当前 AI 请求超时（毫秒） */
+  getRequestTimeoutMs(): number {
+    return this.requestTimeoutMs;
+  }
+
   /** 切换干运行模式 */
   setDryRun(enabled: boolean): void {
     this.dryRun = enabled;
@@ -353,6 +384,81 @@ export class WebAgent {
     this.history = [];
   }
 
+  // ─── UI 面板 ───
+
+  /**
+   * 手动创建并挂载 UI 面板（构造时未传 panel 选项时可后续调用）。
+   * 若面板已存在则跳过。
+   */
+  createPanel(options: PanelOptions = {}): Panel {
+    if (this.panel) return this.panel;
+    this.panel = new Panel(options);
+    this.wirePanel();
+    return this.panel;
+  }
+
+  /**
+   * 销毁 UI 面板。
+   */
+  destroyPanel(): void {
+    if (!this.panel) return;
+    this.panel.unmount();
+    this.panel = null;
+  }
+
+  /**
+   * 建立面板到 WebAgent 的双向绑定。
+   *
+   * - panel.onSend → agent.chat()
+   * - agent.callbacks → panel 消息流 & 状态
+   */
+  private wirePanel(): void {
+    if (!this.panel) return;
+    const panel = this.panel;
+
+    // 用户消息 → agent.chat
+    panel.onSend = async (text: string) => {
+      panel.setStatus("running");
+      panel.showTyping();
+      try {
+        const result = await this.chat(text);
+        panel.removeTyping();
+        if (result.reply) {
+          panel.addMessage("assistant", result.reply);
+        }
+        panel.setStatus("idle");
+      } catch (err) {
+        panel.removeTyping();
+        panel.addMessage("error", `执行失败: ${err instanceof Error ? err.message : String(err)}`);
+        panel.setStatus("error");
+      }
+    };
+
+    // 包裹 callbacks：转发到面板
+    const originalOnText = this.callbacks.onText;
+    const originalOnToolCall = this.callbacks.onToolCall;
+    const originalOnToolResult = this.callbacks.onToolResult;
+
+    this.callbacks.onText = (text: string) => {
+      originalOnText?.(text);
+      // 实时文本由 wirePanel.onSend 的 result.reply 处理，此处不重复添加
+    };
+
+    this.callbacks.onToolCall = (name: string, input: unknown) => {
+      originalOnToolCall?.(name, input);
+      const inputStr = typeof input === "string" ? input : JSON.stringify(input, null, 0);
+      const summary = inputStr.length > 80 ? inputStr.slice(0, 80) + "…" : inputStr;
+      panel.addMessage("tool", `🔧 ${name}(${summary})`);
+    };
+
+    this.callbacks.onToolResult = (name: string, result: ToolCallResult) => {
+      originalOnToolResult?.(name, result);
+      const resultStr = typeof result.content === "string" ? result.content : JSON.stringify(result.content, null, 0);
+      const summary = resultStr.length > 100 ? resultStr.slice(0, 100) + "…" : resultStr;
+      panel.addMessage("tool", `✅ ${name} → ${summary}`);
+    };
+  }
+
   // ─── 核心能力 ───
 
   /**
@@ -369,7 +475,9 @@ export class WebAgent {
     const client = this.client ?? this.createBuiltinClient();
 
     // 先构建基础系统提示词，再追加已注册的 system prompt 扩展。
-    let systemPrompt = buildSystemPrompt({ tools: this.registry.getDefinitions() });
+    let systemPrompt = buildSystemPrompt({
+      listenerEvents: this.snapshotOptions.listenerEvents,
+    });
     if (this.systemPromptRegistry.size > 0) {
       const extensionText = Array.from(this.systemPromptRegistry.entries())
         .map(([key, prompt]) => `- [${key}]\n${prompt}`)
@@ -396,10 +504,6 @@ export class WebAgent {
       if (this.autoSnapshot) {
         this.callbacks.onSnapshot?.(snapshot);
       }
-
-      systemPrompt += wrapSnapshot(
-        `\n\n## DOM Snapshot\n\`\`\`\n${snapshot}\n\`\`\``,
-      );
     } catch {
       // 快照失败不阻塞正常流程
     }
@@ -463,6 +567,7 @@ export class WebAgent {
       apiKey: this.token,
       baseURL: this.baseURL,
       stream: this.stream,
+      requestTimeoutMs: this.requestTimeoutMs,
     });
   }
 }
@@ -486,3 +591,4 @@ export {
   type ToolCallResponse,
   type ToolExecutorMap,
 } from "./messaging.js";
+export { default as Panel, type PanelOptions } from "./ui/index.js";

@@ -124,13 +124,27 @@ export function normalizeModelOutput(text: string | undefined): string {
  * - `null` 表示协议缺失
  *
  * 注意：这里只负责解析，不负责 fallback 策略。
+ *
+ * 解析策略：
+ * - 匹配最后一个 `REMAINING:` 后到行尾的内容（单行匹配，不跨行）
+ * - `REMAINING: DONE` → 返回 `""`（任务完成）
+ * - `REMAINING: <text>` → 返回 `<text>`
+ * - DONE 后面尾随的摘要文本会被忽略（模型常在 DONE 后附加总结）
  */
 export function parseRemainingInstruction(text: string | undefined): string | null {
   if (!text) return null;
-  const match = text.match(/REMAINING\s*:\s*([\s\S]*)$/i);
-  if (!match) return null;
-  const value = match[1].trim();
-  return /^done$/i.test(value) ? "" : value;
+  // 按行从后往前找最后一个 REMAINING: 行（模型可能在 DONE 后输出总结文本）
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const lineMatch = lines[i].match(/REMAINING\s*:\s*(.*)$/i);
+    if (lineMatch) {
+      const value = lineMatch[1].trim();
+      // 兼容 `REMAINING: DONE - xxx` / `REMAINING: DONE: xxx` 等写法
+      if (/^done(?:\s*(?:[-—:：]|\b).*)?$/i.test(value)) return "";
+      return value;
+    }
+  }
+  return null;
 }
 
 /**
@@ -200,6 +214,7 @@ export function shouldForceRoundBreak(toolName: string, toolInput: unknown): boo
   }
 
   if (toolName === "dom") {
+    if (action === "click") return true;
     if (action === "press") {
       const key = typeof toolInput === "object" && toolInput !== null
         ? String((toolInput as { key?: unknown; value?: unknown }).key ?? (toolInput as { value?: unknown }).value ?? "")

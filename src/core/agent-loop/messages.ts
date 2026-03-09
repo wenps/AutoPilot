@@ -225,9 +225,12 @@ export function buildCompactMessages(
     if (latestSnapshot) {
       parts.push(
         "",
-        "Use #hashID from snapshot. Do NOT call page_info (snapshot is auto-refreshed). Batch all visible actions in one round.",
+        "Use #hashID from snapshot. Do NOT call page_info (snapshot is auto-refreshed). Batch fills freely; at most ONE click (last) per round.",
+        "Semantic completion: keep all unresolved user constraints in Remaining until they are visibly satisfied in the snapshot.",
+        "Do NOT compress Remaining into a vague shell action that drops required entities, values, counts, filters, destinations, selections, or final outcomes from the user goal.",
+        "Before any advance/finalize action, verify the prerequisite constraints are already satisfied in snapshot; otherwise continue the unsatisfied parts first.",
         "Effect check: confirm previous actions' expected effects in current snapshot before planning new actions.",
-        "If action changes DOM (modal/navigate), stop batch and continue next round.",
+        "Click ends the round — actions after a click are discarded. Dropdown: open(click) → next round → pick(click).",
         "If a list shows `... (N children omitted)`, output `SNAPSHOT_HINT: EXPAND_CHILDREN #<ref>` and wait for next snapshot.",
         allowAgentUiInteraction
           ? "User explicitly asked to operate AutoPilot UI. You may interact with chat input/send/dock only as requested."
@@ -272,10 +275,13 @@ export function buildCompactMessages(
     `Remaining: ${activeInstruction}`,
     "",
     // ── 关键行为强化（system prompt 已有完整规则，此处补强模型易违反的关键条） ──
-    "Execute all independent visible sub-tasks in one round. Do NOT call page_info (snapshot is auto-refreshed).",
+    "Batch fills per round; clicks end the round — at most ONE click (last). Do NOT call page_info (snapshot is auto-refreshed).",
+    "Semantic completion: preserve all unresolved user constraints in Remaining until they are visibly satisfied in the snapshot.",
+    "Do NOT narrow Remaining into only a shell action if that would drop required entities, values, counts, filters, destinations, selections, or final outcomes.",
+    "Before any advance/finalize action, check that all prerequisite constraints are already visible in the snapshot.",
     "Effect check: confirm previous actions' expected effects in snapshot before planning new actions.",
     "Never repeat the same tool call on the same target. If no effect, try a different element.",
-    "If action changes DOM (modal/navigate), stop batch and continue next round.",
+    "Click ends the round — actions after a click are discarded. Dropdown: open(click) → next round → pick(click).",
     "If a list shows `... (N children omitted)`, output `SNAPSHOT_HINT: EXPAND_CHILDREN #<ref>` and wait.",
     allowAgentUiInteraction
       ? "User explicitly asked to operate AutoPilot UI."
