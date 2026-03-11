@@ -440,7 +440,8 @@ function executeFillOnResolvedTarget(
       return { content: `"${selector}" 为 input[type=number]，无法填写非数字 "${value}"`, details: { error: true, code: "INVALID_NUMBER", action, selector } };
     }
     scrollIntoViewIfNeeded(target);
-    target.focus();
+    // 模拟真实用户交互：先 click 再 fill（dispatchClickEvents 内含 focus）
+    dispatchClickEvents(target);
     selectText(target);
     setNativeValue(target, value);
     dispatchInputEvents(target);
@@ -453,7 +454,8 @@ function executeFillOnResolvedTarget(
 
   if (target instanceof HTMLTextAreaElement) {
     scrollIntoViewIfNeeded(target);
-    target.focus();
+    // 模拟真实用户交互：先 click 再 fill（dispatchClickEvents 内含 focus）
+    dispatchClickEvents(target);
     selectText(target);
     setNativeValue(target, value);
     dispatchInputEvents(target);
@@ -477,7 +479,8 @@ function executeFillOnResolvedTarget(
   }
 
   if (target instanceof HTMLElement && target.isContentEditable) {
-    target.focus();
+    // 模拟真实用户交互：先 click 再 fill（dispatchClickEvents 内含 focus）
+    dispatchClickEvents(target);
     selectText(target);
     if (value) document.execCommand("insertText", false, value);
     else document.execCommand("delete", false, undefined);
@@ -987,8 +990,9 @@ export function createDomTool(): ToolDefinition {
               return { content: `已在自定义下拉中选择 "${wanted}"` };
             }
 
-            // 原生 <select>
-            target.focus();
+            // 原生 <select>：模拟真实用户交互，先 click 再选择
+            scrollIntoViewIfNeeded(target);
+            dispatchClickEvents(target);
             const options = Array.from(target.options);
             let selected: HTMLOptionElement | undefined;
             if (value !== undefined) selected = options.find(o => o.value === value);
@@ -1066,7 +1070,9 @@ export function createDomTool(): ToolDefinition {
             if (value === undefined) return { content: "缺少 value 参数" };
             const target = retarget(el, "follow-label");
             scrollIntoViewIfNeeded(target);
-            if (target instanceof HTMLElement) target.focus();
+            // 模拟真实用户交互：先 click 再逐字输入（dispatchClickEvents 内含 focus）
+            if (target instanceof HTMLElement) dispatchClickEvents(target);
+            else if (target instanceof SVGElement) target.focus();
 
             for (const char of value) {
               const init: KeyboardEventInit = { key: char, code: resolveKeyCode(char), bubbles: true, cancelable: true };

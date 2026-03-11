@@ -119,7 +119,6 @@ function normalizeExtraInstructions(input?: string | string[]): string[] {
  *    - hash ID 定位：仅交互元素携带 #hashID，非交互元素为上下文
  *    - 事件信号：listeners="..." 标注运行时事件绑定
  *    - 批量执行：同轮完成所有独立可见操作
- *    - 输入顺序：fill/type 前必须先 focus/click 同一目标
  *    - DOM 变化断轮：会改变 DOM 的动作执行后等待下一轮新快照
  *    - 停机规则：任务完成后输出 REMAINING: DONE
  *
@@ -164,9 +163,8 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
       "- No-effect fallback: if a click produced no page change (snapshot unchanged), do NOT repeat the same target. Instead: (1) look for <a> links or <button> inside the clicked container; (2) try a parent or sibling with stronger click signal; (3) try a completely different approach (e.g., search, filter, sidebar navigation, or use evaluate to trigger the action programmatically).",
 
       "- Batch fill/type/check/select_option freely within one round. A click always ends the round — send at most ONE click as the LAST action in a batch.",
-      "- Input order (MANDATORY): focus/click → fill/type/select_option per target. Multi-field: focus A→fill A→focus B→fill B.",
+      "- fill/type/select_option auto-focus: these actions automatically click and focus the target before input — do NOT send a separate focus/click before them.",
       "- Search/filter inputs: after fill, press Enter (or click search button) to trigger the search. Do not assume fill alone submits.",
-      "- Do NOT run focus-only batches. Each focus must be immediately followed by its fill/type/select_option.",
 
       "- Steppers: compute delta from visible value, click exactly |delta| times. Check/uncheck: target real input control.",
       "- DOM-changing action (click/modal/navigate): ends the round, next snapshot follows. Actions sent after a click in the same batch are discarded.",

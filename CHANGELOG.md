@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.0.55
+
+### 改进
+
+- **fill/type/select_option 自动 click + focus**：
+  - `fill`：文本类 input、textarea、contentEditable 在填写前自动执行完整 click 事件链（pointermove→pointerdown→mousedown→focus→pointerup→mouseup→click），确保 React/Vue 受控组件和 UI 组件库（Ant Design、Element Plus 等）的状态机被正确激活
+  - `type`：逐字输入前由 `focus()` 改为 `dispatchClickEvents()`，补齐 click 事件链
+  - `select_option`（原生 `<select>`）：由 `focus()` 改为 `scrollIntoViewIfNeeded` + `dispatchClickEvents()`，补齐 click 事件链
+  - date/color/range 等特殊类型不受影响（保持 `focus()` + `setValue`，避免触发原生 picker）
+
+- **移除冗余的 focus/click 前置提示词**：
+  - 移除 `Input order (MANDATORY): focus/click → fill/type/select_option` 规则
+  - 移除 `Do NOT run focus-only batches` 规则
+  - 新增 `fill/type/select_option auto-focus` 规则，告知模型无需额外发送 focus/click
+  - 填写多字段从 4 个 tool_call（focus A→fill A→focus B→fill B）减少到 2 个（fill A→fill B），节省约 50% token 消耗
+
 ## 0.0.54
 
 ### 修复
