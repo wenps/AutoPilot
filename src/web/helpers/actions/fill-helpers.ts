@@ -22,7 +22,7 @@
  * 从 dom-tool 提取。
  */
 import type { ToolCallResult } from "../../../core/tool-registry.js";
-import { getTrackedElementEvents } from "../../event-listener-tracker.js";
+import { getTrackedElementEvents } from "../../../core/event-listener-tracker.js";
 import { isElementVisible } from "../base/visibility.js";
 import { isElementDisabled, isEditableElement, INPUT_BLOCKED_TYPES } from "../base/element-checks.js";
 import { sleep, dispatchClickEvents, dispatchInputEvents, setNativeValue, selectText } from "../base/event-dispatch.js";

@@ -16,19 +16,19 @@
  * - 本文件只处理快照文本本身，不负责业务决策与停机判定。
  *
  * 压缩/剪枝实现位置：
- * - 具体算法在 `src/web/tools/page-info-tool.ts` 的 `generateSnapshot()`。
+ * - 具体算法在 `src/web/snapshot.ts` 的 `generateSnapshot()`。
  * - 本文件通过 `readPageSnapshot()` 传参触发这些策略，不在 core 层直接操作 DOM。
  * - 这样保持分层：core 只声明策略参数，web 负责真实遍历与裁剪。
  */
 
 // 快照本身的能力是基于 page_info 的 tools 实现的
-import { ToolRegistry } from "../tool-registry.js";
+import { ToolRegistry } from "../../tool-registry.js";
 import {
   SNAPSHOT_END,
   SNAPSHOT_OUTDATED,
   SNAPSHOT_START,
-} from "./constants.js";
-import { toContentString } from "./helpers.js";
+} from "../constants.js";
+import { toContentString } from "../helpers.js";
 
 // ─── 快照读取 ───
 

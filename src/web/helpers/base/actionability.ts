@@ -5,10 +5,10 @@
  * 从 dom-tool 提取，供 dom-tool、fill-helpers 等模块复用。
  */
 import type { ToolCallResult } from "../../../core/tool-registry.js";
-import { getTrackedElementEvents } from "../../event-listener-tracker.js";
 import { isElementVisible } from "./visibility.js";
 import { isElementDisabled, isEditableElement } from "./element-checks.js";
 import { getClickPoint } from "./event-dispatch.js";
+import { getTrackedElementEvents } from "../../../core/event-listener-tracker.js";
 
 // ─── 常量 ───
 

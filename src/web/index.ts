@@ -38,15 +38,15 @@ import { createAIClient } from "../core/ai-client/index.js";
 import type { AIClient } from "../core/types.js";
 import { ToolRegistry, type ToolDefinition, type ToolCallResult } from "../core/tool-registry.js";
 import { buildSystemPrompt } from "../core/system-prompt.js";
-import { generateSnapshot, type SnapshotOptions } from "./tools/page-info-tool.js";
+import { generateSnapshot, type SnapshotOptions } from "../core/agent-loop/snapshot/index.js";
 import { createDomTool, setActiveRefStore } from "./tools/dom-tool.js";
 import { createNavigateTool } from "./tools/navigate-tool.js";
 import { createPageInfoTool } from "./tools/page-info-tool.js";
 import { createWaitTool } from "./tools/wait-tool.js";
 import { createEvaluateTool } from "./tools/evaluate-tool.js";
 import { RefStore } from "./ref-store.js";
-import { installEventListenerTracking } from "./event-listener-tracker.js";
 import Panel, { type PanelOptions } from "./ui/index.js";
+import { installEventListenerTracking } from "../core/event-listener-tracker.js";
 
 // 默认安装全局事件监听追踪（幂等），用于快照输出 listeners 信号。
 installEventListenerTracking();
@@ -578,7 +578,7 @@ export class WebAgent {
 export {
   generateSnapshot,
   type SnapshotOptions,
-} from "./tools/page-info-tool.js";
+} from "../core/agent-loop/snapshot/index.js";
 export { createDomTool } from "./tools/dom-tool.js";
 export { createNavigateTool } from "./tools/navigate-tool.js";
 export { createPageInfoTool } from "./tools/page-info-tool.js";
@@ -590,5 +590,5 @@ export {
   type ToolCallMessage,
   type ToolCallResponse,
   type ToolExecutorMap,
-} from "./messaging.js";
+} from "../core/messaging.js";
 export { default as Panel, type PanelOptions } from "./ui/index.js";

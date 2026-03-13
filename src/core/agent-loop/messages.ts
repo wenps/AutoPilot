@@ -47,7 +47,7 @@
 import type { ToolCallResult } from "../tool-registry.js";
 import type { AIMessage } from "../types.js";
 import { toContentString, hasToolError } from "./helpers.js";
-import { wrapSnapshot, SNAPSHOT_REGEX } from "./snapshot.js";
+import { wrapSnapshot, SNAPSHOT_REGEX } from "./snapshot/index.js";
 import type { ToolTraceEntry } from "./types.js";
 
 /**

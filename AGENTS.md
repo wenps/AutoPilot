@@ -24,14 +24,24 @@ src/
 │   ├── tool-params.ts
 │   ├── tool-registry.ts
 │   ├── system-prompt.ts
+│   ├── snapshot.ts              # core 快照聚合出口（兼容）
+│   ├── snapshot-engine.ts       # 兼容转发层（re-export -> agent-loop/snapshot/engine）
+│   ├── messaging.ts
+│   ├── event-listener-tracker.ts
 │   ├── agent-loop/
 │   │   ├── index.ts
 │   │   ├── types.ts
 │   │   ├── constants.ts
 │   │   ├── helpers.ts
-│   │   ├── snapshot.ts
+│   │   ├── snapshot.ts          # 兼容转发层（re-export -> snapshot/lifecycle）
+│   │   ├── snapshot/
+│   │   │   ├── index.ts
+│   │   │   ├── lifecycle.ts
+│   │   │   └── engine.ts
 │   │   ├── messages.ts
-│   │   ├── recovery.ts
+│   │   ├── recovery.ts          # 兼容转发层（re-export -> recovery/index）
+│   │   ├── recovery/
+│   │   │   └── index.ts
 │   │   └── LOOP_MECHANISM.md   # Agent Loop 权威机制说明（必须同步维护）
 │   └── ai-client/
 │       ├── index.ts
@@ -53,9 +63,11 @@ src/
   ├── page-info-tool.ts    # 兼容转发层（re-export）
   ├── wait-tool.ts         # 兼容转发层（re-export）
   ├── evaluate-tool.ts     # 兼容转发层（re-export）
-  ├── event-listener-tracker.ts  # 全局事件监听追踪器
+  ├── event-listener-tracker.ts  # 兼容转发层（re-export -> core）
   ├── ref-store.ts
-  ├── messaging.ts
+  ├── messaging.ts         # 兼容转发层（re-export -> core）
+  ├── snapshot.ts          # 兼容转发层（re-export -> core）
+  ├── snapshot-engine.ts   # 兼容转发层（re-export -> core）
   ├── helpers/
   │   ├── base/             # 基础能力层（环境无关的纯工具函数）
   │   │   ├── index.ts      # barrel 导出
@@ -215,16 +227,14 @@ src/
   - Round 1+ 注入“remaining + done steps + previous executed + effect check + previous model output + latest snapshot”
   - 效果检查（Effect check）：通过简短提示要求 AI 确认上轮操作是否生效，非阻塞式设计避免分析瘧痪
 
+- `snapshot/`
+  - `lifecycle.ts`：读取页面 URL/快照、快照包裹与去重、prompt 中旧快照剥离
+  - `engine.ts`：DOM 快照序列化实现（`generateSnapshot` / `SnapshotOptions`）
+  - `index.ts`：snapshot 子模块聚合导出
 - `snapshot.ts`
-  - 读取页面 URL/快照
-  - 快照包裹与去重
-  - prompt 中旧快照剥离
+  - 兼容转发层（re-export -> `snapshot/lifecycle.ts`）
 
-- `recovery.ts`
-  - 冗余 page_info 拦截
-  - 元素找不到后的恢复拍照
-  - 导航变化检测
-  - 空转检测
+### core
 
 - `helpers.ts`
   - 工具结果识别、输入摘要、等待时间解析等纯函数
@@ -250,6 +260,7 @@ src/
 ### web
 
 - `index.ts`：WebAgent 对外 API，负责配置、记忆、autoSnapshot、callbacks
+- `snapshot.ts`：兼容转发层（re-export -> core/snapshot-engine）
 - `helpers/base/`：基础能力层，提供不直接参与工具动作执行的底层纯函数
   - `active-store.ts`：activeRefStore 模块级状态，解耦 dom-tool / page-info-tool / resolve-selector 的循环依赖
   - `resolve-selector.ts`：统一选择器解析（#hashID 优先通过 RefStore，CSS 作为兼容回退）
@@ -266,13 +277,13 @@ src/
   - `wait-helpers.ts`：等待策略（selector state 四态判定、MutationObserver + 轮询双通道、文本等待、DOM 静默窗口）
 - `tools/dom-tool.ts`：DOM 操作工具定义与 action 分发（16 种动作），自身仅含 schema 定义 + 元素查找 + switch-case 分发，底层能力全部委托 helpers
 - `tools/navigate-tool.ts`：导航工具定义与分发（goto/back/forward/scroll/reload 5 种动作）
-- `tools/page-info-tool.ts`：页面信息工具 + DOM 快照序列化引擎（6 种动作），是 SDK 中最重的工具文件
+- `tools/page-info-tool.ts`：页面信息工具定义与分发（6 种动作）；`snapshot` 动作为框架内部调用，序列化实现位于 `core/agent-loop/snapshot/engine.ts`（经 `web/snapshot.ts` 转发）
 - `tools/wait-tool.ts`：等待工具定义与分发（5 种动作），底层逻辑委托 helpers/actions/wait-helpers
 - `tools/evaluate-tool.ts`：JS 执行工具定义与分发（2 种动作），自包含实现，无外部 helper 依赖
 - `dom-tool.ts` / `navigate-tool.ts` / `page-info-tool.ts` / `wait-tool.ts` / `evaluate-tool.ts`：兼容转发层，避免外部导入路径断裂
-- `event-listener-tracker.ts`：全局事件监听追踪器，通过 `EventTarget.prototype` 补丁拦截 `addEventListener/removeEventListener`，记录每个 Element 的运行时事件绑定。为快照的交互性判定（`hasInteractiveTrackedEvents`）、事件简写标注（`listeners="clk,inp,..."`）和优先级排序提供基础数据
+- `event-listener-tracker.ts`：兼容转发层（实现已迁移至 core/event-listener-tracker.ts）
 - `ref-store.ts`：`#hashID -> Element` 映射
-- `messaging.ts`：Extension 场景消息桥
+- `messaging.ts`：兼容转发层（实现已迁移至 core/messaging.ts）
 
 ## 6. 保护机制（系统稳定性的核心）
 

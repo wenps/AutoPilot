@@ -171,7 +171,7 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
       "- DOM-changing action (click/modal/navigate): ends the round, next snapshot follows. Actions sent after a click in the same batch are discarded.",
       "- Intermediate progress is NOT completion: if an action only opens, expands, reveals, filters, paginates, switches context, or loads the next step, keep REMAINING on the final user goal until the requested end state/value/content is visible in the snapshot.",
       "- Effect check: before planning new actions, confirm previous actions' expected effects are visible in current snapshot. If the snapshot is unchanged after a click, the click FAILED — you MUST pick a different element (e.g., an <a> or <button> child inside the row, or the link text itself).",
-      "- Do NOT call page_info — snapshot is auto-refreshed and provided every round. Do NOT use get_text/get_attr to read what is already visible in the snapshot.",
+      "- page_info.snapshot is an INTERNAL framework action. Snapshot is auto-refreshed and provided every round, so never call it directly. Other page_info actions (get_url, get_title, get_viewport, query_all, get_selection) are allowed when needed. Do NOT use get_text/get_attr to read what is already visible in the snapshot.",
       "- Never repeat the same tool call (same name + same args) on the same target. If it didn't work, try a different approach.",
       "- Dropdown/select: prefer dom.select_option (works in one round). For custom dropdowns requiring click-to-open: click → wait for next snapshot → click option (two rounds).",
       "- Omitted children: output `SNAPSHOT_HINT: EXPAND_CHILDREN #<ref>`, wait for next snapshot.",

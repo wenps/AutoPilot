@@ -113,3 +113,30 @@ export {
 
 /** 系统提示词构建器与参数类型 / System prompt builder and params type. */
 export { buildSystemPrompt, type SystemPromptParams } from "./system-prompt.js";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 快照生命周期能力（中）/ Snapshot lifecycle exports (EN)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 快照读取/包裹/剥离能力聚合出口 / Snapshot lifecycle facade exports. */
+export {
+  readPageUrl,
+  readPageSnapshot,
+  stripSnapshotFromPrompt,
+} from "./agent-loop/snapshot/index.js";
+
+/** 浏览器运行时消息桥接能力（实现位于 core，供 web 转发使用）。 */
+export {
+  createProxyExecutor,
+  registerToolHandler,
+  type ToolCallMessage,
+  type ToolCallResponse,
+  type ToolExecutorMap,
+} from "./messaging.js";
+
+/** 运行时事件监听追踪能力（实现位于 core，供快照/动作评分复用）。 */
+export {
+  installEventListenerTracking,
+  getTrackedElementEvents,
+  hasTrackedElementEvents,
+} from "./event-listener-tracker.js";

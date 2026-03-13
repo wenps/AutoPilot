@@ -23,6 +23,23 @@
 - **工具文件 JSDoc 增强**：
   - 5 个 tool 文件注释完善为结构化格式：职责说明、完整动作列表（含实现细节）、核心机制、依赖结构、运行环境
 
+- **Agent Loop 模块目录化（snapshot / recovery）**：
+  - 快照能力迁移为 `src/core/agent-loop/snapshot/` 子模块：
+    - `lifecycle.ts`：读取/包裹/剥离
+    - `engine.ts`：`generateSnapshot` / `SnapshotOptions`
+    - `index.ts`：统一聚合导出
+  - 恢复能力迁移为 `src/core/agent-loop/recovery/index.ts`，`recovery.ts` 保留为兼容转发层
+  - `src/core/agent-loop/snapshot.ts` 保留为兼容转发层（re-export -> `snapshot/lifecycle.ts`）
+
+- **core 统一维护关键能力（实现迁移，web 保留兼容层）**：
+  - `event-listener-tracker` 与 `messaging` 实现迁移至 `src/core/`，`src/web/` 对应文件改为兼容转发层
+  - `snapshot-engine` 实现统一维护于 core 路径，web 侧 `snapshot.ts` / `snapshot-engine.ts` 仅保留转发
+  - `page-info-tool.ts` 保留 `snapshot` 动作作为框架内部调用，AI 可见动作描述中移除 `snapshot`
+
+- **文档一致性更新**：
+  - 同步更新 `AGENTS.md` 的目录树与模块职责，明确实现层与兼容转发层边界
+  - 同步更新 `system-prompt.ts`：明确 `page_info.snapshot` 为 INTERNAL framework action（禁止模型主动调用）
+
 ## 0.0.56
 
 ### 修复

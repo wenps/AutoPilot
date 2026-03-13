@@ -12,10 +12,10 @@
  * 5) 重复无效点击拦截：对已证实无效的 click 目标做框架级拦截
  * 一句话：这里是主循环的“保险丝层”。
  */
-import type { ToolCallResult } from "../tool-registry.js";
-import type { AgentLoopCallbacks } from "./types.js";
-import { DEFAULT_ACTION_RECOVERY_ROUNDS } from "./constants.js";
-import { readPageSnapshot } from "./snapshot.js";
+import type { ToolCallResult } from "../../tool-registry.js";
+import type { AgentLoopCallbacks } from "../types.js";
+import { DEFAULT_ACTION_RECOVERY_ROUNDS } from "../constants.js";
+import { readPageSnapshot } from "../snapshot/index.js";
 import {
   getToolAction,
   hasToolError,
@@ -25,48 +25,9 @@ import {
   sleep,
   toContentString,
   findNearbyClickTargets,
-} from "./helpers.js";
-import { ToolRegistry } from "../tool-registry.js";
-import type { PageContextState } from "./types.js";
-
-// ─── 冗余 page_info 拦截 ───
-
-/** 冗余 page_info 动作集合。 */
-const REDUNDANT_PAGE_INFO_ACTIONS = new Set(["snapshot", "query_all", "get_url", "get_title", "get_viewport"]);
-
-/**
- * 冗余 page_info 检查。
- *
- * 场景：模型在 loop 中频繁请求 page_info，导致“只看不做”。
- * 处理：命中白名单动作时直接返回拦截结果，不真正执行工具。
- *
- * 示例：
- * - 输入：`page_info.snapshot`
- * - 输出：`REDUNDANT_PAGE_INFO_SKIPPED`
- */
-// 大白话：拦截一些默认行为，因为快照每轮都会自动提供了，不需要模型再去请求了，直接用就好。避免模型反复请求快照或者一些基本信息，导致循环效率低下或者只看不做。
-export function checkRedundantSnapshot(
-  toolName: string,
-  toolInput: unknown,
-  _latestSnapshot: string | undefined,
-  round: number,
-): ToolCallResult | null {
-  if (toolName !== "page_info") return null;
-
-  const action = getToolAction(toolInput);
-  if (action && REDUNDANT_PAGE_INFO_ACTIONS.has(action)) {
-    return {
-      content:
-        `page_info.${action} is blocked in loop execution. A snapshot is provided by the framework; continue with actionable tools directly.`,
-      details: {
-        code: "REDUNDANT_PAGE_INFO_SKIPPED",
-        action,
-        round,
-      },
-    };
-  }
-  return null;
-}
+} from "../helpers.js";
+import { ToolRegistry } from "../../tool-registry.js";
+import type { PageContextState } from "../types.js";
 
 // ─── 元素未找到自动恢复 ───
 

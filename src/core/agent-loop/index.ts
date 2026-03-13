@@ -64,15 +64,14 @@ import {
   toContentString,
   hasToolError,
 } from "./helpers.js";
-import { readPageSnapshot, stripSnapshotFromPrompt } from "./snapshot.js";
+import { readPageSnapshot, stripSnapshotFromPrompt } from "./snapshot/index.js";
 import { buildCompactMessages } from "./messages.js";
 import {
-  checkRedundantSnapshot,
   checkIneffectiveClickRepeat,
   handleElementRecovery,
   handleNavigationUrlChange,
   detectIdleLoop,
-} from "./recovery.js";
+} from "./recovery/index.js";
 import type {
   AgentLoopParams,
   AgentLoopResult,
@@ -483,18 +482,7 @@ export async function executeAgentLoop(
         if (ref) snapshotExpandRefIds.add(ref);
       }
 
-      // 保护 1：冗余快照拦截
-      const redundant = checkRedundantSnapshot(
-        tc.name, tc.input, pageContext.latestSnapshot, round,
-      );
-      if (redundant) {
-        appendToolTrace(round, tc.name, tc.input, redundant);
-        redundantInterceptCount += 1;
-        callbacks?.onToolResult?.(tc.name, redundant);
-        continue;
-      }
-
-      // 保护 1.5：重复无效点击拦截（附带快照中的附近可点击元素推荐）
+      // 保护 1：重复无效点击拦截（附带快照中的附近可点击元素推荐）
       const ineffective = checkIneffectiveClickRepeat(
         tc.name, tc.input, ineffectiveClickSelectors, pageContext.latestSnapshot,
       );
@@ -804,7 +792,7 @@ export async function executeAgentLoop(
 }
 
 // ─── Re-exports（维持外部 API 不变）───
-export { wrapSnapshot } from "./snapshot.js";
+export { wrapSnapshot } from "./snapshot/index.js";
 export type {
   AgentLoopParams,
   AgentLoopResult,
