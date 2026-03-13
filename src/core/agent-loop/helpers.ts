@@ -450,7 +450,7 @@ export function reduceRemainingHeuristically(
  * shouldForceRoundBreak("dom", { action: "fill", selector: "#in" })    // → false
  * shouldForceRoundBreak("dom", { action: "press", key: "Enter" })      // → true
  * shouldForceRoundBreak("dom", { action: "press", key: "Tab" })        // → false
- * shouldForceRoundBreak("navigate", { action: "goto", url: "/home" })  // → true
+ * shouldForceRoundBreak("navigate", { action: "back" })                // → true
  * shouldForceRoundBreak("evaluate", { expression: "alert(1)" })        // → true
  * ```
  */
@@ -487,7 +487,7 @@ export function shouldForceRoundBreak(toolName: string, toolInput: unknown): boo
  * isPotentialDomMutation("dom", { action: "click" })    // → true
  * isPotentialDomMutation("dom", { action: "fill" })     // → true
  * isPotentialDomMutation("dom", { action: "get_text" }) // → false（只读）
- * isPotentialDomMutation("navigate", { action: "goto" }) // → true
+ * isPotentialDomMutation("navigate", { action: "back" }) // → true
  * isPotentialDomMutation("page_info", { action: "snapshot" }) // → false
  * ```
  */
@@ -539,7 +539,7 @@ export function isPotentialDomMutation(toolName: string, toolInput: unknown): bo
  * isConfirmedProgressAction("dom", { action: "select_option" })  // → true
  * isConfirmedProgressAction("dom", { action: "press" })          // → true
  * isConfirmedProgressAction("dom", { action: "click" })          // → false（不确定是否有效）
- * isConfirmedProgressAction("navigate", { action: "goto" })      // → true
+ * isConfirmedProgressAction("navigate", { action: "back" })       // → true
  * isConfirmedProgressAction("my_custom_tool", { query: "..." })  // → true（自定义工具）
  * isConfirmedProgressAction("page_info", { action: "snapshot" }) // → false（只读）
  * ```

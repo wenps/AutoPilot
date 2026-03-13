@@ -1,22 +1,42 @@
 /**
- * Page Info Tool — 基于 Web API 的页面信息获取工具。
+ * Page Info Tool — 页面信息获取工具定义与快照生成。
  *
- * 替代 Playwright 的 getTitle/getUrl/snapshot 等。
- * 运行环境：浏览器 Content Script。
+ * 职责：
+ *   本文件是整个 SDK 中最重的工具文件，同时负责：
+ *   1. 工具 schema 定义与 action 分发（get_url / snapshot / query_all 等）
+ *   2. DOM 快照序列化引擎（buildSnapshot / serializeTree）
+ *
+ *   快照是 Agent Loop 的核心输入——每轮循环都依赖快照作为当前可执行范围的唯一事实来源。
+ *   快照格式为缩进文本树，每个节点包含标签、属性、文本、交互状态和 #hashID。
  *
  * 支持 6 种动作：
- *   get_url       — 获取当前页面 URL
- *   get_title     — 获取页面标题
- *   get_selection — 获取用户选中的文本
- *   get_viewport  — 获取视口尺寸和滚动位置
- *   snapshot      — 获取页面 DOM 结构快照（AI 可读的文本描述）
- *   query_all     — 查询所有匹配选择器的元素，返回摘要信息
+ *   get_url       — 获取当前页面 URL（document.location.href）
+ *   get_title     — 获取页面标题（document.title）
+ *   get_selection — 获取用户选中的文本（window.getSelection）
+ *   get_viewport  — 获取视口尺寸和滚动位置（innerWidth/innerHeight + scrollX/scrollY）
+ *   snapshot      — 生成 AI 可读的 DOM 结构快照（核心动作，详见下方快照机制说明）
+ *   query_all     — 查询所有匹配选择器的元素，返回 tag/id/text/可见性摘要列表
+ *
+ * 快照机制：
+ *   - 仅交互节点分配 #hashID（通过 hasInteractiveTrackedEvents + 语义标签/ARIA role 判定）
+ *   - 角色优先标签：ARIA role 与 HTML tag 不等价时用 role 替代 tag（如 [combobox] 替代 [input]）
+ *   - 运行态增强：输出 select val、option selected、checked、disabled、readonly 等状态
+ *   - 事件简写标注：listeners="clk,inp,..." 标注运行时事件绑定
+ *   - 视口裁剪（viewportOnly）：跳过完全在视口外的元素，减少 token 消耗
+ *   - 布局折叠（pruneLayout）：折叠无意义纯布局容器，子元素直接提升；相邻提升节点用括号分组块保留关联
+ *   - 节点上限（maxNodes）：超出后停止遍历，避免超大页面 token 爆炸
+ *
+ * 依赖结构：
+ *   helpers/base/active-store — 获取当前 RefStore 实例
+ *   event-listener-tracker    — 获取元素运行时事件绑定信息
+ *
+ * 运行环境：浏览器 Content Script（直接访问 DOM，无 CDP）。
  */
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js";
 import type { RefStore } from "../ref-store.js";
 import { getTrackedElementEvents, hasTrackedElementEvents } from "../event-listener-tracker.js";
-import { getActiveRefStore } from "./dom-tool.js";
+import { getActiveRefStore } from "../helpers/base/active-store.js";
 
 /** 快照配置选项 */
 export type SnapshotOptions = {

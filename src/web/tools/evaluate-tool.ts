@@ -1,15 +1,30 @@
 /**
- * Evaluate Tool — 在页面上下文中执行任意 JavaScript 表达式。
+ * Evaluate Tool — JavaScript 表达式执行工具定义与分发。
  *
- * 替代 Playwright 的 page.evaluate()。
- * 运行环境：浏览器 Content Script。
- *
- * 这是最灵活的工具 — 当其他 tools 无法满足需求时，
- * AI 可以直接编写 JS 代码来操作页面。
+ * 职责：
+ *   本文件负责 evaluate 工具的 schema 定义、JS 执行和结果序列化。
+ *   这是 SDK 中最灵活的工具——当 dom/navigate/wait 等结构化工具无法满足需求时，
+ *   AI 可通过此工具直接编写任意 JS 代码操作页面（如读取 localStorage、调用框架 API、
+ *   操作 Canvas、触发自定义事件等）。
  *
  * 支持 2 种动作：
- *   evaluate        — 执行 JS 表达式并返回结果
- *   evaluate_handle — 执行 JS 并返回序列化的 DOM 信息
+ *   evaluate        — 执行 JS 表达式并返回序列化结果（自动处理 DOM 元素、数组、循环引用）
+ *   evaluate_handle — 执行 JS 并返回 DOM 元素摘要信息（tag、id、class、text、可见性、rect）
+ *
+ * 执行机制：
+ *   - 使用 new Function() 构造器代替 eval，避免污染当前作用域
+ *   - 先尝试作为表达式执行（return (expr)），失败后回退为语句块执行
+ *   - 执行错误会被捕获并以 error 字段返回，不会中断 Agent Loop
+ *
+ * 安全约束：
+ *   - 运行在 Content Script 同源上下文，受页面 CSP 策略限制
+ *   - 无法访问跨域 iframe 内容
+ *   - Agent Loop 将 evaluate 视为潜在 DOM 变更动作（会触发断轮等待新快照）
+ *
+ * 依赖结构：
+ *   无外部 helper 依赖，自包含实现。
+ *
+ * 运行环境：浏览器 Content Script（直接访问 DOM，无 CDP）。
  */
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition, ToolCallResult } from "../../core/tool-registry.js";
