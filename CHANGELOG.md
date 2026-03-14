@@ -6,9 +6,12 @@
 
 - **断言能力（Assertion）**：
   - 新增内置 `assert` 工具 — AI 认为任务完成时主动调用 `assert({})`，触发独立 AI 判定任务是否真正完成
-  - 断言 AI 使用专用 Prompt（不继承 system prompt、不带 tools），基于当前快照 + 已执行操作判定每条任务断言
+  - 断言 AI 使用专用 Prompt（不继承 system prompt、不带 tools），基于初始快照 + 动作后快照 + 当前快照 + 已执行操作判定每条任务断言
+  - 断言 AI 接收三份快照：初始快照（任务开始前）、动作后快照（稳定等待前，捕获瞬态成功提示）、当前快照（稳定后最终状态）
+  - 通过 before/after 对比判定"创建/修改/删除"等长任务是否完成；动作后快照解决"提交后自动跳转导致成功信息丢失"
   - 新增 `assertion/` 子模块（`types.ts` / `prompt.ts` / `index.ts`）：类型定义、断言专用 Prompt 构建、断言评估引擎
   - 新增 `StopReason: "assertion_passed"` — 所有断言通过时立即收敛停机
+  - 新增 `StopReason: "assertion_loop"` — 连续 2 轮仅调 assert 且都失败时自动停机，防止断言死循环
   - 支持自定义断言：`ChatOptions.assertionConfig.taskAssertions` 传入细粒度子任务断言
   - 默认断言：无自定义配置时以用户原始消息作为整体断言依据
   - `assert` 可与其他工具调用在同一轮共存 — 先执行其他工具，等待稳定后再发起断言

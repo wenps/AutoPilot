@@ -345,16 +345,19 @@ src/
 
 8. 停机原因可观测（stopReason）
 - 每次停机时 `metrics.stopReason` 输出精确的停机原因枚举值
-- 枚举值：`converged`（任务收敛）/ `assertion_passed`（断言通过）/ `repeated_batch`（重复批次）/ `idle_loop`（空转）/ `stale_remaining`（滞止收敛）/ `no_protocol`（协议缺失）/ `protocol_fix_failed`（协议修复失败）/ `max_rounds`（达到上限）/ `dry_run`（干运行模式）
+- 枚举值：`converged`（任务收敛）/ `assertion_passed`（断言通过）/ `assertion_loop`（断言死循环）/ `repeated_batch`（重复批次）/ `idle_loop`（空转）/ `stale_remaining`（滞止收敛）/ `no_protocol`（协议缺失）/ `protocol_fix_failed`（协议修复失败）/ `max_rounds`（达到上限）/ `dry_run`（干运行模式）
 - 目标：消除停机原因靠猜测的问题，所有保护停机条件均可追溯
 
 9. 断言能力（Assertion）
 - 通过独立 AI 调用判断任务是否已完成，解决模型自行收敛不可靠的问题
 - 触发方式：执行 AI 主动调用 `assert({})` 工具（system prompt 告知模型具备断言能力）
 - `assert` 可与其他工具调用在同一轮共存：先执行其他工具，等待稳定后再触发断言
-- 评估流程：聚合已执行动作 → 读取最新快照 → 独立 AI 请求（无 tools、无 system prompt 继承）→ 返回 JSON 结果
+- 评估流程：聚合已执行动作 → 读取初始快照 + 动作后快照 + 最新快照 → 独立 AI 请求（无 tools、无 system prompt 继承）→ 返回 JSON 结果
+- 初始快照对比：断言 AI 同时接收任务开始前的初始快照和当前快照，通过 before/after 对比判定“创建/修改/删除”等长任务是否完成
+- 动作后快照（Post-Action Snapshot）：在稳定等待之前拍取，捕获成功提示、确认弹窗等可能因页面跳转而消失的瞬态反馈，解决“提交后自动跳转导致成功信息丢失”的问题
 - `allPassed = true`：停机，`stopReason = "assertion_passed"`
 - `allPassed = false`：失败原因通过 `## Assertion Progress` 区块注入下一轮上下文，继续循环
+- 断言死循环防护：连续 2 轮仅调 assert（无其他工具）且都失败时，自动停机 `stopReason = "assertion_loop"`
 - 配置入口：`ChatOptions.assertionConfig.taskAssertions[]`（每条含 `task` + `description`）
 - 关键实现：`src/core/agent-loop/assertion/`（types.ts / prompt.ts / index.ts）
 ## 7. 变更策略（高优先级）

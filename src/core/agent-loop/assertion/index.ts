@@ -25,6 +25,8 @@ import { buildAssertionSystemPrompt, buildAssertionUserMessage } from "./prompt.
  * @param snapshot - 当前页面快照文本
  * @param executedActions - 已执行操作摘要列表（如 "dom click #abc123"）
  * @param taskAssertions - 待验证的任务断言
+ * @param initialSnapshot - 任务开始前的初始快照（可选，用于 before/after 对比）
+ * @param postActionSnapshot - 动作执行后、稳定等待前的快照（可选，捕获成功提示等瞬态反馈）
  * @returns 结构化断言结果
  */
 export async function evaluateAssertions(
@@ -32,13 +34,15 @@ export async function evaluateAssertions(
   snapshot: string,
   executedActions: string[],
   taskAssertions: TaskAssertion[],
+  initialSnapshot?: string,
+  postActionSnapshot?: string,
 ): Promise<AssertionResult> {
   if (taskAssertions.length === 0) {
     return { allPassed: true, total: 0, passed: 0, failed: 0, details: [] };
   }
 
   const systemPrompt = buildAssertionSystemPrompt();
-  const userMessage = buildAssertionUserMessage(snapshot, executedActions, taskAssertions);
+  const userMessage = buildAssertionUserMessage(snapshot, executedActions, taskAssertions, initialSnapshot, postActionSnapshot);
 
   try {
     // 独立 AI 调用：不传 tools，让断言 AI 专注判断
@@ -85,8 +89,10 @@ function parseAssertionResponse(
   rawText: string,
   taskAssertions: TaskAssertion[],
 ): TaskAssertionResult[] {
+  // 剥离 <think>...</think> 推理标签（DeepSeek / MiniMax 等模型会输出）
+  const stripped = rawText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   // 尝试从文本中提取 JSON 数组（可能被 markdown code fences 包裹）
-  const jsonText = rawText
+  const jsonText = stripped
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```\s*$/, "")
     .trim();

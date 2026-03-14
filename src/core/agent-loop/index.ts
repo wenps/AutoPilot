@@ -197,6 +197,8 @@ export async function executeAgentLoop(
   // 恢复与拦截统计
   let recoveryCount = 0;
   let redundantInterceptCount = 0;
+  // 断言死循环检测：连续仅调 assert（无其他工具）且断言失败的轮次
+  let consecutiveAssertOnlyFailedRounds = 0;
 
   // 重复无效点击拦截：记录已证实点击无效的 selector 集合。
   // 轮次结束且快照未变时将本轮 click selector 加入；快照变化时仅移除本轮点击的 selector。
@@ -607,6 +609,10 @@ export async function executeAgentLoop(
 
     // ═══ 断言处理：assert 工具与其他工具一起返回时，先等稳定再发起断言 ═══
     if (assertToolCall) {
+      // 在稳定等待之前先拍一份“动作后快照”，捕获成功提示/弹窗等瞬态反馈（可能在稳定等待期间因页面跳转而消失）
+      await refreshSnapshot();
+      const postActionSnapshot = pageContext.latestSnapshot || "";
+
       // 先等页面稳定（若本轮有 DOM 变更动作）
       if (roundHasPotentialDomMutation) {
         await runRoundStabilityBarrier();
@@ -633,6 +639,8 @@ export async function executeAgentLoop(
         pageContext.latestSnapshot || "",
         actionSummaries,
         taskAssertions,
+        initialSnapshot,
+        postActionSnapshot,
       );
       lastAssertionResult = assertionResult;
 
@@ -654,6 +662,24 @@ export async function executeAgentLoop(
         stopReason = "assertion_passed";
         break;
       }
+
+      // 断言失败 + 本轮仅有 assert 调用（无其他实质工具）→ 累计断言死循环计数
+      if (regularToolCalls.length === 0) {
+        consecutiveAssertOnlyFailedRounds++;
+        if (consecutiveAssertOnlyFailedRounds >= 2) {
+          // 连续 2 轮只调 assert 且都失败：停机，避免无限循环
+          finalReply = response.text?.trim() || "断言连续失败，停止执行。";
+          if (finalReply) callbacks?.onText?.(finalReply);
+          stopReason = "assertion_loop";
+          break;
+        }
+      } else {
+        // 本轮有其他工具执行：重置计数
+        consecutiveAssertOnlyFailedRounds = 0;
+      }
+    } else {
+      // 本轮无 assert 调用：重置计数
+      consecutiveAssertOnlyFailedRounds = 0;
     }
 
     if (roundMissingTasks.length > 0) {

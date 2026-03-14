@@ -13,6 +13,7 @@ import type { AssertionConfig, AssertionResult } from "./assertion/types.js";
  *
  * - `converged`：任务完成（REMAINING: DONE 或 remaining 收敛为空）
  * - `assertion_passed`：所有任务断言均通过（AI 驱动的任务完成验证）
+ * - `assertion_loop`：连续断言失败且执行 AI 仅调 assert 无其他动作（断言死循环）
  * - `repeated_batch`：连续相同工具调用批次 ≥ 3 轮（防自转）
  * - `idle_loop`：连续只读轮次触发空转检测
  * - `no_protocol`：连续多轮有工具调用但无 REMAINING 协议且无有效推进
@@ -24,6 +25,7 @@ import type { AssertionConfig, AssertionResult } from "./assertion/types.js";
 export type StopReason =
   | "converged"
   | "assertion_passed"
+  | "assertion_loop"
   | "repeated_batch"
   | "idle_loop"
   | "no_protocol"

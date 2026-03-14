@@ -202,19 +202,24 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
   - `assert` 可与其他工具调用在同一轮共存——先执行其他工具，等待稳定屏障后再触发断言。
 - **评估流程**：
   1. 从 `fullToolTrace` 聚合已执行动作摘要（工具名 + 输入简述 + 是否成功）。
-  2. 读取最新页面快照。
-  3. 调用 `evaluateAssertions()`：使用独立 AI 请求（**无 tools、无 system prompt 继承**），仅传入断言专用 prompt + 快照 + 动作摘要 + 任务断言列表。
-  4. 断言 AI 返回 JSON 数组，每条包含 `task`、`passed`（boolean）、`reason`。
-  5. 汇总为 `AssertionResult { allPassed, total, passed, failed, details[] }`。
+  2. 在稳定等待之前先拍取"动作后快照"（Post-Action Snapshot），捕获成功提示、确认弹窗等可能因页面跳转而消失的瞬态反馈。
+  3. 运行稳定等待屏障 + 清除 hover + 刷新快照，得到"当前快照"（最终稳定状态）。
+  4. 调用 `evaluateAssertions()`：使用独立 AI 请求（**无 tools、无 system prompt 继承**），传入断言专用 prompt + 初始快照 + 动作后快照 + 当前快照 + 动作摘要 + 任务断言列表。
+  5. 断言 AI 综合三份快照判定：初始快照作为基线、动作后快照捕获瞬态确认、当前快照确认最终状态。
+  6. 断言 AI 返回 JSON 数组，每条包含 `task`、`passed`（boolean）、`reason`。
+  7. 汇总为 `AssertionResult { allPassed, total, passed, failed, details[] }`。
+- **初始快照对比**：断言 AI 同时接收任务开始前的初始快照和当前快照，通过 before/after 对比判定"创建/修改/删除"等长任务是否完成（如初始快照有 2 个实例，当前快照有 3 个实例 → 创建成功）。
+- **动作后快照**（Post-Action Snapshot）：在稳定等待之前拍取，捕获成功提示、确认弹窗等可能因页面跳转而消失的瞬态反馈，解决"提交后自动跳转导致成功信息丢失"的问题。当 postActionSnapshot 与 currentSnapshot 相同时自动去重不发送。
 - **停机逻辑**：
   - `allPassed = true`：循环终止，`stopReason = "assertion_passed"`。
   - `allPassed = false`：将失败原因注入下一轮上下文（`## Assertion Progress` 区块），继续循环。
+- **断言死循环防护**：连续 2 轮仅调 assert（无其他工具）且都失败时，自动停机 `stopReason = "assertion_loop"`。
 - **断言进度注入**（Round 1+）：
   - 若 `lastAssertionResult` 存在且 `!allPassed`，在快照前注入 `## Assertion Progress (x/y passed)` 区块。
   - 已通过的断言标 `✓`、失败的标 `✗`，附带 AI 判定理由。
   - 提示 AI 聚焦失败断言，不重复已通过的操作；在认为失败项修复后再次调用 `assert({})`。
 - **配置入口**：`ChatOptions.assertionConfig.taskAssertions[]`，每条包含 `task`（断言标识）和 `description`（AI 可理解的判定描述）。
-- **工具注册**：`assert` 工具在 `chat()` 开始时动态注册（schema 为空对象），结束后注销。
+- **工具注册**：`assert` 作为内置工具在 `registerTools()` 时注册，与 dom/navigate/wait/evaluate 同级。
 ---
 
 ## 6. 停机条件与 stopReason
@@ -225,6 +230,7 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 | --- | --- |
 | remaining 收敛（`REMAINING: DONE` 或为空） | `converged` |
 | 断言全部通过（`assert` 工具触发且 `allPassed`） | `assertion_passed` |
+| 连续断言失败且执行 AI 仅调 assert 无其他动作（断言死循环） | `assertion_loop` |
 | 连续相同工具调用批次 ≥ 3 轮（防自转） | `repeated_batch` |
 | 连续只读轮次（空转） | `idle_loop` |
 | remaining 连续不推进且无确认性进展 ≥ 3 轮（滞止收敛） | `stale_remaining` |

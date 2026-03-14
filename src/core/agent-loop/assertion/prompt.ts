@@ -20,16 +20,20 @@ export function buildAssertionSystemPrompt(): string {
     "You are a verification judge. Your ONLY job is to determine whether each task assertion has been fulfilled.",
     "",
     "You will receive:",
-    "1. A page snapshot (text representation of current page state)",
-    "2. A list of actions that were executed",
-    "3. One or more task assertions to verify",
+    "1. An initial page snapshot (the page state BEFORE any actions were executed)",
+    "2. A current page snapshot (the page state AFTER actions were executed)",
+    "3. A list of actions that were executed",
+    "4. One or more task assertions to verify",
     "",
-    "For each task assertion, examine the snapshot and actions to determine if the described condition is satisfied.",
+    "For each task assertion, compare the initial and current snapshots along with the executed actions to determine if the task was completed.",
     "",
     "## Rules",
-    "- Judge ONLY based on the provided snapshot and actions. Do not assume or infer beyond what is visible.",
-    "- A task is PASSED only if the snapshot clearly shows the expected outcome described in the assertion.",
-    "- If the snapshot does not show clear evidence of completion, the task is FAILED.",
+    "- Compare the INITIAL snapshot with the CURRENT snapshot to detect changes caused by the executed actions.",
+    "- For creation/addition tasks: if the current snapshot shows new items that were NOT in the initial snapshot, that is strong evidence of success.",
+    "- For modification tasks: if the current snapshot shows changed values compared to the initial snapshot, that is evidence of success.",
+    "- If initial snapshot is absent, judge based on current snapshot + action sequence coherence.",
+    "- A task is PASSED if the comparison clearly shows the expected outcome.",
+    "- If there is no detectable change or the expected outcome is not visible, the task is FAILED.",
     "- Be strict: partial completion = FAILED.",
     "- `is-active`, `checked`, `selected`, color values, text content, element presence — all must match the assertion description.",
     "",
@@ -39,7 +43,7 @@ export function buildAssertionSystemPrompt(): string {
     "",
     "Example:",
     "[",
-    "  { \"task\": \"Select 5 stars\", \"passed\": true, \"reason\": \"All 5 star icons show is-active class\" },",
+    "  { \"task\": \"Create instance\", \"passed\": true, \"reason\": \"Current snapshot shows new-instance-001 in the table which was absent in initial snapshot\" },",
     "  { \"task\": \"Fill username\", \"passed\": false, \"reason\": \"Username input shows empty value, expected admin\" }",
     "]",
   ].join("\n");
@@ -58,11 +62,27 @@ export function buildAssertionUserMessage(
   snapshot: string,
   executedActions: string[],
   taskAssertions: Array<{ task: string; description: string }>,
+  initialSnapshot?: string,
+  postActionSnapshot?: string,
 ): string {
   const sections: string[] = [];
 
-  // 快照
-  sections.push("## Current Page Snapshot");
+  // 初始快照（任务开始前的页面状态）
+  if (initialSnapshot) {
+    sections.push("## Initial Page Snapshot (BEFORE actions)");
+    sections.push(initialSnapshot);
+    sections.push("");
+  }
+
+  // 动作后快照（最后一个动作执行后、页面稳定/跳转前的快照，可能含成功提示等瞬态反馈）
+  if (postActionSnapshot && postActionSnapshot !== snapshot) {
+    sections.push("## Post-Action Snapshot (immediately after last action, before page settling/navigation)");
+    sections.push(postActionSnapshot);
+    sections.push("");
+  }
+
+  // 当前快照（稳定等待后的最终状态）
+  sections.push("## Current Page Snapshot (settled state)");
   sections.push(snapshot || "(empty snapshot)");
   sections.push("");
 
