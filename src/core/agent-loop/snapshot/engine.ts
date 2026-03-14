@@ -328,6 +328,9 @@ export function generateSnapshot(
     if (hasTrackedElementEvents(el)) return false;
     // 有直接文本内容的元素有意义
     if (directText) return false;
+    // 有 inline background-color 的元素携带颜色语义（如颜色选择器色块）
+    const style = el.getAttribute("style");
+    if (style && /background-color\s*:/i.test(style)) return false;
     return true;
   }
 
@@ -480,6 +483,19 @@ export function generateSnapshot(
   }
 
   /**
+   * 子树中是否存在带语义样式的后代（如 inline background-color）。
+   * 用于阻止文本聚合吞掉颜色指示器等视觉语义信息。
+   */
+  function hasSemanticStyleDescendant(el: Element): boolean {
+    for (const child of Array.from(el.children)) {
+      const s = child.getAttribute("style");
+      if (s && /background-color\s*:/i.test(s)) return true;
+      if (hasSemanticStyleDescendant(child)) return true;
+    }
+    return false;
+  }
+
+  /**
    * 深度收集元素子树中所有叶子文本节点的内容。
    * 跳过 SKIP_TAGS 和不可见元素，用于透明容器的文本聚合。
    */
@@ -600,11 +616,15 @@ export function generateSnapshot(
     }
 
     // 7. 对于 input/textarea，补充当前实际 value（截短到 40 字符）
+    // checkbox/radio 的 .value 固定为 HTML attribute 默认值（通常 "on"），不代表运行时状态，
+    // 输出会误导 AI 以为开关仍处于 on；状态完全由 checked 有无表达（见 7.1）。
     if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && el.value) {
-      const currentVal = sanitizeSnapshotAttrValue(el.value).slice(0, 40);
-      const attrVal = el.getAttribute("value");
-      if (attrVal !== currentVal) {
-        attrs.push(`val="${currentVal}"`);
+      if (!(el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio"))) {
+        const currentVal = sanitizeSnapshotAttrValue(el.value).slice(0, 40);
+        const attrVal = el.getAttribute("value");
+        if (attrVal !== currentVal) {
+          attrs.push(`val="${currentVal}"`);
+        }
       }
     }
 
@@ -613,12 +633,33 @@ export function generateSnapshot(
       if (!attrs.includes("checked")) attrs.push("checked");
     }
 
+    // 7.2 输出 ARIA 状态属性（aria-checked / aria-expanded / aria-selected）。
+    // 这些属性为开关、手风琴、Tab 等 ARIA 组件提供明确的双向状态信号，
+    // 避免 AI 只能靠 class/checked 缺失来判断 OFF 状态。
+    for (const ariaAttr of ["aria-checked", "aria-expanded", "aria-selected"] as const) {
+      const ariaVal = el.getAttribute(ariaAttr);
+      if (ariaVal !== null) {
+        attrs.push(`${ariaAttr}="${ariaVal}"`);
+      }
+    }
+
     // 8. 对于 select，补充当前选中 value；对于 option，按运行时 selected 状态输出
     if (el instanceof HTMLSelectElement && el.value) {
       attrs.push(`val="${sanitizeSnapshotAttrValue(el.value).slice(0, 40)}"`);
     }
     if (el instanceof HTMLOptionElement && el.selected) {
       if (!attrs.includes("selected")) attrs.push("selected");
+    }
+
+    // 8.1 提取 inline style 中的 background-color（颜色指示器/色块元素的选中状态）。
+    // 不输出完整 style（定位/布局噪声太大），只提取语义颜色值。
+    const inlineStyle = el.getAttribute("style");
+    if (inlineStyle) {
+      const bgMatch = inlineStyle.match(/background-color\s*:\s*([^;]+)/i);
+      if (bgMatch) {
+        const bgVal = bgMatch[1].trim().slice(0, 30);
+        if (bgVal) attrs.push(`bg="${bgVal}"`);
+      }
     }
 
     // 获取直接文本（不含子元素文本）
@@ -638,8 +679,8 @@ export function generateSnapshot(
     if (isEmptyLayoutContainer(el, directText)) {
       const allChildren = Array.from(el.children);
 
-      // 文本聚合：子树无交互后代时，合并所有叶子文本为一行
-      if (!allChildren.some(c => hasInteractiveDescendant(c))) {
+      // 文本聚合：子树无交互后代、也无语义样式后代时，合并所有叶文本为一行
+      if (!allChildren.some(c => hasInteractiveDescendant(c)) && !hasSemanticStyleDescendant(el)) {
         const texts = collectLeafTexts(el, maxTextLength);
         if (texts.length > 0) {
           emittedNodes++;

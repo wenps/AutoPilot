@@ -169,6 +169,7 @@ src/
 - chat 发起时由前端先生成首轮快照并注入 `initialSnapshot`。
 - 默认拦截 `page_info.*`，避免模型把“看页面”当主流程。
 - `pruneLayout=true` 折叠布局容器时，若同一折叠链路提升出多个相邻子节点，快照会输出括号分组块（`collapsed-group`）保留关联语义。
+- Round 1+ 注入快照变化摘要（Snapshot Changes）：通过 `computeSnapshotDiff()` 对比前后两轮快照（hashID 归一化后逐行对比），以 `- removed` / `+ added` 格式输出变化行（最多 20 行），让 AI 直接看到"什么变了"，避免微小状态变化（如 `checked` 消失、`is-checked` 消失）淹没在几百行快照中。
 
 ### 4.4 找不到元素重试对话流（新增）
 
@@ -182,12 +183,12 @@ src/
 ### 4.5 工具语义对齐（Playwright 风格，新增）
 
 当前实现在 Web 工具层对齐了常见 Playwright 语义：
-- `dom.click`：补齐 `pointerdown/mousedown/pointerup/mouseup/click` 事件链，减少站点事件漏触发。
+- `dom.click`：补齐 `pointerdown/mousedown/pointerup/mouseup/click` 事件链，通过 `elementFromPoint` 定位最内层可见目标并在其上分发事件（冒泡到外层），避免在外层容器 dispatch 导致内层 handler 无法触发。
 - `dom.select_option`：支持 `value/label/index` 多策略选择；结果中显式返回 `value + label`。
 - `dom.fill`：限制不适用于 `checkbox/radio/file/button/submit/reset`，避免错误动作。
 - `wait.wait_for_selector`：支持 `state=attached|visible|hidden|detached`（默认 `attached`）。
-- 快照增强运行态：`select val`、`option selected`、`checked`、`disabled`、`readonly` 可见。
-- 快照增强结构语义：布局折叠后可通过括号分组块（`collapsed-group`）看出被提升节点之间的来源关联。
+- 快照增强运行态：`select val`、`option selected`、`checked`、`disabled`、`readonly`、`aria-checked`、`aria-expanded`、`aria-selected`、`bg="..."` 可见；checkbox/radio 跳过固定 `.value`（状态完全由 `checked` 有无表达）。
+- 快照增强结构语义：布局折叠后可通过括号分组块（`collapsed-group`）看出被提升节点之间的来源关联；含 `background-color` 的色块元素不被折叠或文本聚合吞掉。
 - 仅交互节点分配 hash ID：通过 `hasInteractiveTrackedEvents()` + 语义标签/ARIA role 判定交互性，非交互节点不占 token。
 - 角色优先标签：当元素拥有 `INTERACTIVE_ROLES` 内的 ARIA role 且与 HTML tag 不等价时，用 role 替代 tag 作为显示标签（如 `[combobox]` 替代 `[input] role="combobox"`、`[slider]` 替代 `[div] role="slider"`），同时从属性列表中移除冗余的 `role="..."`。
 - 点击目标选择约束：`click/navigation` 动作优先命中具备点击信号的目标（`listeners` 含 `clk/pdn/mdn`、`onclick`、原生链接/按钮语义或 `role=button/link`）；仅 `focus/hover` 信号节点默认视为上下文，不作为主点击目标。
@@ -212,6 +213,16 @@ src/
 - 该提示与 `protocolViolationHint`（重复批次/协议缺失）合并注入，不覆盖
 - 与效果验证机制互补：效果验证依赖模型自我察觉，指纹检测是框架级兜底
 
+### 4.8 快照变化摘要（Snapshot Diff）
+
+通过 `computeSnapshotDiff()` 对比前后两轮快照，输出可读的变化行摘要，注入到 Round 1+ 用户消息中：
+- hashID 归一化后逐行对比，消除 DOM 重渲染噪音
+- 输出格式：`- removed line` / `+ added line`，最多 20 行
+- 仅在 Round 1+（有前一轮快照可对比）且 diff 非空时注入
+- 注入位置：快照之前，作为 `## Snapshot Changes (since last round)` 区块
+- 与指纹检测互补：指纹只判断"变没变"，diff 告诉 AI "变了什么"
+- 典型场景：开关 toggle 后 `checked` 消失、颜色选择器 `bg` 变化、表单值更新等微小状态变化
+
 ## 5. 模块职责细化
 
 ### core/agent-loop
@@ -224,8 +235,9 @@ src/
 - `messages.ts`
   - 紧凑消息构建
   - Round 0 注入“原始任务 + 快照 + 关键行为强化”
-  - Round 1+ 注入“remaining + done steps + previous executed + effect check + previous model output + latest snapshot”
+  - Round 1+ 注入"remaining + done steps + previous executed + effect check + previous model output + snapshot changes diff + latest snapshot"
   - 效果检查（Effect check）：通过简短提示要求 AI 确认上轮操作是否生效，非阻塞式设计避免分析瘧痪
+  - 快照变化摘要（Snapshot Changes）：diff 非空时在快照前注入 `## Snapshot Changes`，让 AI 直接看到前后轮变化
 
 - `snapshot/`
   - `lifecycle.ts`：读取页面 URL/快照、快照包裹与去重、prompt 中旧快照剥离
@@ -241,6 +253,7 @@ src/
   - `isPotentialDomMutation()`：宽泛判定（含 click），用于轮次后稳定等待
   - `isConfirmedProgressAction()`：窄判定（含 fill/type/press/navigate/自定义工具，不含 click），用于协议缺失计数器重置与豁免
   - `computeSnapshotFingerprint()`：剥离 hashID 后的快照指纹，用于轮次间变化检测
+  - `computeSnapshotDiff()`：hashID 归一化后逐行对比两份快照，输出变化行摘要（最多 20 行），用于 Round 1+ 快照变化注入
 
 ### core/ai-client
 
@@ -267,11 +280,11 @@ src/
   - `visibility.ts`：元素可见性判定（含 `isStyleVisible` 递归检测 + `<details>/<summary>` 特殊处理）
   - `element-checks.ts`：元素状态检查（`isElementDisabled` 含 ARIA disabled 祖先链、`isEditableElement`、`INPUT_BLOCKED_TYPES`）
   - `form-item.ts`：表单项容器检测（`endsWith("form-item")` 泛化匹配 + `role="group"`，覆盖主流 UI 框架）
-  - `event-dispatch.ts`：Playwright 风格事件模拟原语（完整 click/hover/input 事件链、`setNativeValue`、`selectText`）
+  - `event-dispatch.ts`：Playwright 风格事件模拟原语（完整 click/hover/input 事件链、`setNativeValue`、`selectText`、`deepestChildAtPoint` 最内层目标穿透）
   - `keyboard.ts`：键盘模拟（组合键解析 `splitKeyCombo`、keyCode 映射 `resolveKeyCode`、keydown/keypress/keyup 分发 `executePress`）
   - `actionability.ts`：可操作性校验（位置稳定 `checkElementStable`、多策略滚动 `scrollIntoViewIfNeeded`、遮挡检测 `checkHitTarget`、点击信号校验 `validateClickSignal`、综合检查 `ensureActionable`）
 - `helpers/actions/`：动作执行层，与工具动作直接关联的高层组合逻辑
-  - `retarget.ts`：目标重定向与归一化（Playwright retarget 模式：非交互→button/link 回溯、label→control 关联、checkbox/radio/switch 归一化、formItem→control 重定向）
+  - `retarget.ts`：目标重定向与归一化（Playwright retarget 模式：非交互→button/link 回溯、label→control 关联、checkbox/radio/switch 归一化、formItem→control 重定向；元素自身有 click/pointerdown/mousedown 追踪事件时跳过祖先回溯）
   - `fill-helpers.ts`：表单填充策略（分类型 fill、nearby 不可编辑目标推断、slider 关联数值输入、`collectSearchScopes` 共享作用域收集）
   - `dropdown-helpers.ts`：自定义下拉交互（`waitForDropdownPopup` 弹窗等待、`findVisibleOptionByText` 选项文本匹配，覆盖 ARIA listbox + 主流框架 popper）
   - `wait-helpers.ts`：等待策略（selector state 四态判定、MutationObserver + 轮询双通道、文本等待、DOM 静默窗口）
@@ -289,34 +302,35 @@ src/
 
 必须理解并保留以下机制：
 
-1. 冗余调用拦截
-- 避免 AI 无意义调用 page_info 导致 completion 浪费
-
-2. 元素恢复机制
+1. 元素恢复机制
 - 元素找不到时进入重试对话流（失败工具聚合 + 快照 + 尝试次数）
 
-3. 导航上下文更新
+2. 导航上下文更新
 - 导航后刷新快照，避免旧映射污染
 
-4. 空转检测
+3. 空转检测
 - 连续只读/无实质推进时终止循环，防止无限迭代
 
-5. 重复批次防自转
+4. 重复批次防自转
 - 若连续两轮返回完全相同的任务批次且上一轮无错误，注入"换策略"提示（不停机）
 - 若连续三轮仍相同批次且上一轮无错误，直接终止本次请求
 - 目标：给模型一次换策略的机会，避免因页面跳转延迟等瞬态原因过早终止
 
-6. 无效点击拦截与交替循环检测
+5. 无效点击拦截与交替循环检测
 - 快照指纹未变时，将本轮 click selector 加入拦截集合，下一轮再次点击直接返回 `INEFFECTIVE_CLICK_BLOCKED` 引导模型换目标。
 - 快照变化时，仅移除本轮点击的 selector（可能引发了变化），保留其他轮次标记的无效 selector。
   - 避免模型在两个目标间交替点击时，其中一个引发轻微快照变化（如焦点样式）导致另一个被错误解锁。
 - 交替循环检测：近 6 轮 click 目标滑动窗口，若近 4 轮内唯一目标 ≤ 2 个且总点击 ≥ 4 次，判定为循环，将目标全部加入拦截集并注入警告。
 - 附近可点击元素推荐：当点击被拦截或证实无效时，使用 `findNearbyClickTargets()` 从快照中查找目标上下 15 行内带点击信号的元素，按距离排序后以 `#hashID (brief)` 格式注入提示，让模型有明确替代目标而非盲猜。
 
-7. 协议修复回合
-- 当“remaining 未完成 + 无工具调用”出现时，不直接结束
-- 下一轮注入 protocol violation 提示，要求“要么工具调用推进，要么严格 `REMAINING: DONE`”
+6. 协议修复回合
+- 当"remaining 未完成 + 无工具调用"出现时，不直接结束
+- 下一轮注入 protocol violation 提示，要求"要么工具调用推进，要么严格 `REMAINING: DONE`"
 
+7. 停机原因可观测（stopReason）
+- 每次停机时 `metrics.stopReason` 输出精确的停机原因枚举值
+- 枚举值：`converged`（任务收敛）/ `repeated_batch`（重复批次）/ `idle_loop`（空转）/ `no_protocol`（协议缺失）/ `protocol_fix_failed`（协议修复失败）/ `max_rounds`（达到上限）/ `dry_run`（干运行模式）
+- 目标：消除停机原因靠猜测的问题，所有保护停机条件均可追溯
 ## 7. 变更策略（高优先级）
 
 ### 允许做的

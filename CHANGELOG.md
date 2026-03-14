@@ -2,6 +2,37 @@
 
 ## 0.0.57
 
+### 新功能
+
+- **快照变化摘要（Snapshot Diff）**：
+  - 新增 `computeSnapshotDiff()`，hashID 归一化后逐行对比前后快照，输出 `- removed` / `+ added` 格式变化摘要（最多 20 行）
+  - Round 1+ 快照前注入 `## Snapshot Changes (since last round)` 区块，让 AI 直接看到"什么变了"
+
+- **停机原因枚举（StopReason）**：
+  - 新增 `StopReason` 类型（`converged` / `repeated_batch` / `idle_loop` / `no_protocol` / `protocol_fix_failed` / `max_rounds` / `dry_run`）
+  - `AgentLoopMetrics` 新增 `stopReason` 字段，全链路记录停机原因
+
+### 改进
+
+- **快照引擎增强**：
+  - 输出 `aria-checked` / `aria-expanded` / `aria-selected` ARIA 状态属性
+  - 提取 inline `background-color` 作为 `bg="..."` 属性（颜色指示器/色块元素）
+  - 跳过 checkbox/radio `.value` 输出（状态完全由 `checked` 有无表达）
+  - 布局折叠与文本聚合保留背景色语义，含 `background-color` 的元素不被折叠或吞并
+
+- **点击事件穿透（innermost targeting）**：
+  - `dispatchClickEvents` 改为通过 `elementFromPoint` 定位元素中心最内层可见目标，在其上分发事件（冒泡到外层）
+  - 新增 `deepestChildAtPoint` 回退穿透，覆盖 `elementFromPoint` 无法穿透的边界情况
+
+- **retarget 自身点击信号守卫**：
+  - 元素自身有 click/pointerdown/mousedown 追踪事件时，跳过祖先 button/link 回溯
+  - 修复 el-color-picker 等内层 div 有独立 @click handler 却被回溯到外层 button 的问题
+
+### 修复
+
+- **面板展开定位闪烁**：
+  - `updatePanelPosition()` 改为 Promise 异步，await `computePosition` 返回后再移除 `collapsed` 类名
+
 ### 重构
 
 - **web helpers 分层重组（base/ + actions/）**：
@@ -36,9 +67,15 @@
   - `snapshot-engine` 实现统一维护于 core 路径，web 侧 `snapshot.ts` / `snapshot-engine.ts` 仅保留转发
   - `page-info-tool.ts` 保留 `snapshot` 动作作为框架内部调用，AI 可见动作描述中移除 `snapshot`
 
-- **文档一致性更新**：
-  - 同步更新 `AGENTS.md` 的目录树与模块职责，明确实现层与兼容转发层边界
-  - 同步更新 `system-prompt.ts`：明确 `page_info.snapshot` 为 INTERNAL framework action（禁止模型主动调用）
+### 文档
+
+- 同步更新 `LOOP_MECHANISM.md`、`AGENTS.md`、`README.md`
+- recovery 模块注释移除已废弃的冗余拦截/快照防抖描述
+- 同步更新 `system-prompt.ts`：明确 `page_info.snapshot` 为 INTERNAL framework action（禁止模型主动调用）
+
+### Demo
+
+- 新增 `ElementPlaygroundView`（表单/数据展示/反馈组件三 Tab 综合测试页）
 
 ## 0.0.56
 

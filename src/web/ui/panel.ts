@@ -150,10 +150,12 @@ export default class Panel {
     if (!this.mounted) this.mount();
     this.expanded = true;
     this.fab?.classList.add("active");
-    // 先定位再显示，避免初始位置闪烁
-    this.updatePanelPosition();
-    this.panelEl?.classList.remove("collapsed");
-    this.inputEl?.focus();
+    // 先定位再显示：等 computePosition 返回后再移除 collapsed，
+    // 避免面板在默认位置闪烁后跳到正确位置。
+    this.updatePanelPosition().then(() => {
+      this.panelEl?.classList.remove("collapsed");
+      this.inputEl?.focus();
+    });
   }
 
   /** 收起面板 */
@@ -411,9 +413,9 @@ export default class Panel {
    * 使用 @floating-ui/dom 计算面板相对于 FAB 的 tooltip 位置。
    * 根据 FAB 贴边方向自动翻转，并设置对应的 transform-origin 确保动画自然。
    */
-  private updatePanelPosition(): void {
-    if (!this.fab || !this.panelEl || !this.expanded) return;
-    computePosition(this.fab, this.panelEl, {
+  private updatePanelPosition(): Promise<void> {
+    if (!this.fab || !this.panelEl || !this.expanded) return Promise.resolve();
+    return computePosition(this.fab, this.panelEl, {
       placement: "top-end",
       middleware: [
         offset(8),

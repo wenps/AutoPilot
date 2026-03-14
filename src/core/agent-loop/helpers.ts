@@ -137,8 +137,7 @@ export function extractHashSelectorRef(toolInput: unknown): string | null {
  */
 export function computeSnapshotFingerprint(snapshot: string): string {
   if (!snapshot) return "";
-  // 剥离 hash ID（如 #1kry9hw、#az8y2x），保留结构和文本内容
-  const normalized = snapshot.replace(/#[a-z0-9]{4,}/gi, "#_");
+  const normalized = _normalizeHashIds(snapshot);
   return _djb2(normalized);
 }
 
@@ -153,6 +152,93 @@ function _djb2(str: string): string {
     hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
   }
   return (hash >>> 0).toString(36);
+}
+
+/** hashID 归一化（与 computeSnapshotFingerprint 相同） */
+function _normalizeHashIds(text: string): string {
+  return text.replace(/#[a-z0-9]{4,}/gi, "#_");
+}
+
+/**
+ * 对比前后两份快照，输出变化摘要。
+ *
+ * 归一化 hashID 后逐行对比，提取新增、删除、变更行。
+ * 返回简短的变化摘要字符串，token 成本可控（最多 maxLines 行）。
+ * 若无差异或前一份快照为空，返回空字符串。
+ *
+ * 用途：注入到下一轮用户消息中，让 AI 直接看到"什么变了"，
+ * 避免靠 AI 自行对比前后快照（尤其是微小变化如 checked 消失）。
+ */
+export function computeSnapshotDiff(
+  prevSnapshot: string,
+  currSnapshot: string,
+  maxLines = 20,
+): string {
+  if (!prevSnapshot || !currSnapshot) return "";
+
+  const prevLines = _normalizeHashIds(prevSnapshot).split("\n");
+  const currLines = _normalizeHashIds(currSnapshot).split("\n");
+
+  // 逐行对比（简单 LCS 对齐太重，用滑动匹配找到已有行的位移）
+  const prevSet = new Map<string, number[]>();
+  for (let i = 0; i < prevLines.length; i++) {
+    const trimmed = prevLines[i].trimEnd();
+    if (!trimmed) continue;
+    const arr = prevSet.get(trimmed) || [];
+    arr.push(i);
+    prevSet.set(trimmed, arr);
+  }
+
+  const added: string[] = [];
+  const removed = new Set<number>();
+
+  // 标记 prev 中被 curr 命中的行
+  const usedPrevIndices = new Set<number>();
+  for (let i = 0; i < currLines.length; i++) {
+    const trimmed = currLines[i].trimEnd();
+    if (!trimmed) continue;
+    const candidates = prevSet.get(trimmed);
+    if (candidates) {
+      // 用最近的未使用的匹配行
+      let matched = false;
+      for (const idx of candidates) {
+        if (!usedPrevIndices.has(idx)) {
+          usedPrevIndices.add(idx);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        added.push(`+ ${trimmed.trim()}`);
+      }
+    } else {
+      added.push(`+ ${trimmed.trim()}`);
+    }
+  }
+
+  for (let i = 0; i < prevLines.length; i++) {
+    const trimmed = prevLines[i].trimEnd();
+    if (!trimmed) continue;
+    if (!usedPrevIndices.has(i)) {
+      removed.add(i);
+    }
+  }
+
+  const removedLines: string[] = [];
+  for (const idx of removed) {
+    removedLines.push(`- ${prevLines[idx].trim()}`);
+  }
+
+  const allChanges = [...removedLines, ...added];
+  if (allChanges.length === 0) return "";
+
+  // 控制输出长度
+  const truncated = allChanges.slice(0, maxLines);
+  const result = truncated.join("\n");
+  if (allChanges.length > maxLines) {
+    return result + `\n... (${allChanges.length - maxLines} more changes)`;
+  }
+  return result;
 }
 
 /**
@@ -408,7 +494,8 @@ export function deriveNextInstruction(
  *
  * reduceRemainingHeuristically("完成任务", 1)
  * // → "完成任务"（无法拆分，原样返回）
- * ``` */
+ * ```
+ */
 export function reduceRemainingHeuristically(
   currentInstruction: string,
   executedCount: number,

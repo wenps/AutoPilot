@@ -80,11 +80,11 @@ npm install agentpage
 - **Prompt + Tools + 路由三层解耦**：可以快速把"可执行 AI 能力"植入现有前端系统，按路由渐进式接入，支持"项目级工具 + 路由级工具"组合。
 - **增量任务消费协议（REMAINING）**：任务不是一次性执行，而是逐轮消费收敛。每轮只做当前快照可执行的动作，通过 `REMAINING` 协议跟踪进度，支持协议修复和启发式回退，确保复杂多步任务稳定收敛。
 - **原始目标锚定（Original Goal Anchor）**：Round 1+ 每轮消息注入用户原始输入作为任务对照组，防止模型在多步执行过程中偏航（如把“去 X 仓库创建 issue”误解为“创建 X 仓库”）。
-- **12 层保护机制**：冗余拦截、快照防抖、元素恢复、Not-found 重试对话流、导航刷新、空转检测、重复批次防自转、协议修复、快照指纹变化检测、无效点击拦截与循环检测、附近可点击元素推荐、原始目标锚定 —— 目标是**稳定收敛**，而不是偶然成功。
+- **13 层保护机制**：元素恢复、Not-found 重试对话流、导航刷新、空转检测、重复批次防自转、协议修复、轮次稳定等待、快照指纹变化检测、快照变化摘要（Snapshot Diff）、无效点击拦截与循环检测、附近可点击元素推荐、原始目标锚定、停机原因可观测（stopReason） —— 目标是**稳定收敛**，而不是偶然成功。
 - **Playwright 级别交互语义**：完整 pointer/mouse 事件链、4 种 scrollIntoView 策略轮换、actionability 五重检查（可见/稳定/可用/可编辑/遮挡）、智能重定向 retarget、隐藏控件代理点击（ElementPlus/AntD）、`select_option` value/label/index 三策略。
 - **运行时事件信号追踪**：通过 `EventTarget.prototype` 补丁全局追踪事件绑定，快照中输出 `listeners="clk,inp,chg"` 信号，帮助 AI 精准识别真实可交互元素，而非猜测。
 - **效果验证机制（Effect Check）**：每轮行动前自动检查上轮操作是否在当前快照中生效，未生效则尝试邻近元素，避免重复点击无效目标。
-- **结构化可观测指标**：每次 chat 输出 `AgentLoopMetrics`（轮次、成功率、恢复次数、快照体积、Token 消耗），可直接接入监控系统。
+- **结构化可观测指标**：每次 chat 输出 `AgentLoopMetrics`（轮次、成功率、恢复次数、快照体积、Token 消耗、停机原因 `stopReason`），可直接接入监控系统。
 - **core/web 分层架构**：`core` 零 DOM 依赖，可在 Worker/Extension/Node 复用；`web` 封装浏览器能力。
 
 ## 企业落地实践
@@ -225,7 +225,6 @@ Round 3: 执行 C → REMAINING: DONE
 
 | 机制 | 触发条件 | 效果 |
 | --- | --- | --- |
-| 冗余 page_info 拦截 | AI 调用 `page_info.*` | 直接返回拦截结果，避免 Token 浪费 |
 | 元素未找到恢复 | `dom` 操作命中失败 | 等待 100ms → 刷新快照 → 返回恢复标记 |
 | Not-found 重试对话流 | 本轮存在未找到元素 | 注入失败上下文 + `attempt x/y`，最多 2 轮 |
 | 导航后上下文刷新 | `navigate` 成功 | 重置 RefStore + 刷新快照 |
@@ -234,16 +233,25 @@ Round 3: 执行 C → REMAINING: DONE
 | 协议修复回合 | remaining 未完成却无工具调用 | 注入强约束提示 |
 | 轮次稳定等待 | 本轮有 DOM 变化动作 | loading hidden + DOM quiet（200ms/4s） |
 | 快照指纹变化检测 | 本轮有 DOM 变更动作且行动后指纹不变 | 注入 `Snapshot unchanged` 提示，强制模型换目标 |
+| 快照变化摘要 | Round 1+ 且前后快照 diff 非空 | 在快照前注入 `## Snapshot Changes` 变化行摘要，让 AI 直接看到什么变了 |
 | 无效点击拦截与循环检测 | 快照未变时记录无效 click；近 4 轮在 ≤2 个目标间循环 | 拦截重复无效点击；循环检测后将所有循环目标加入拦截集 |
 | 附近可点击元素推荐 | 点击被拦截或证实无效 | 从快照中查找目标附近 15 行内有点击信号的元素，按距离推荐 |
 | 原始目标锚定 | Round 1+ 每轮 | 注入用户原始任务作为对照组，防止多步执行中偏航 |
+| 停机原因可观测 | 每次停机时 | `metrics.stopReason` 输出枚举值（`converged` / `repeated_batch` / `idle_loop` / `no_protocol` / `max_rounds` 等） |
 
-### 5. 停机条件
+### 5. 停机条件与 stopReason
 
-- 模型返回 `REMAINING: DONE` 并输出总结
-- 无工具调用且 remaining 已收敛
-- 重复批次防自转 / 协议修复后仍无推进
-- 达到 `maxRounds` 上限
+每次停机时，`metrics.stopReason` 会输出精确的停机原因枚举值：
+
+| stopReason | 停机场景 |
+| --- | --- |
+| `converged` | 模型返回 `REMAINING: DONE` 或 remaining 收敛为空 |
+| `repeated_batch` | 连续相同工具调用批次 ≥ 3 轮（防自转） |
+| `idle_loop` | 连续只读轮次触发空转检测 |
+| `no_protocol` | 连续多轮有工具调用但无 REMAINING 协议且无有效推进 |
+| `protocol_fix_failed` | 协议修复轮失败（无工具调用 + remaining 未收敛） |
+| `max_rounds` | 达到 maxRounds 上限 |
+| `dry_run` | dry-run 模式，仅展示不执行 |
 
 ---
 
@@ -370,7 +378,7 @@ Round 3: 执行 C → REMAINING: DONE
 
 `get_url` / `get_title` / `get_selection` / `get_viewport` / `snapshot` / `query_all`
 
-> Agent Loop 中 `page_info` 大多被拦截为冗余，框架每轮自动提供最新快照。
+> `page_info.snapshot` 是框架内部动作；快照每轮自动刷新并注入给模型，模型无需主动调用。
 
 ### evaluate — JS 执行
 
@@ -483,6 +491,7 @@ agent.callbacks = {
 | `redundantInterceptCount` | 冗余拦截次数 |
 | `snapshotReadCount` / `latestSnapshotSize` / `avgSnapshotSize` / `maxSnapshotSize` | 快照统计 |
 | `inputTokens` / `outputTokens` | Token 消耗 |
+| `stopReason` | 停机原因枚举（`converged` / `repeated_batch` / `idle_loop` / `no_protocol` / `protocol_fix_failed` / `max_rounds` / `dry_run`） |
 
 ### AgentLoopResult
 
@@ -527,11 +536,21 @@ src/
 │   ├── system-prompt.ts           # 系统提示词构建
 │   ├── tool-registry.ts           # 工具注册表
 │   ├── tool-params.ts             # 参数辅助
+│   ├── snapshot.ts                # 快照聚合出口（兼容）
+│   ├── snapshot-engine.ts         # 兼容转发层（-> agent-loop/snapshot/engine）
+│   ├── messaging.ts               # 消息桥接实现
+│   ├── event-listener-tracker.ts  # 事件追踪实现
 │   ├── agent-loop/                # Agent 循环
 │   │   ├── index.ts               # 主流程编排
 │   │   ├── messages.ts            # 紧凑消息构建
-│   │   ├── snapshot.ts            # 快照读取/包裹/去重
-│   │   ├── recovery.ts            # 恢复与拦截
+│   │   ├── snapshot.ts            # 兼容转发层（-> snapshot/lifecycle）
+│   │   ├── snapshot/              # 快照子模块
+│   │   │   ├── index.ts
+│   │   │   ├── lifecycle.ts       # 快照读取/包裹/去重
+│   │   │   └── engine.ts          # DOM 快照序列化引擎
+│   │   ├── recovery.ts            # 兼容转发层（-> recovery/index）
+│   │   ├── recovery/              # 恢复与拦截子模块
+│   │   │   └── index.ts
 │   │   ├── helpers.ts             # 纯函数工具
 │   │   ├── constants.ts           # 默认常量
 │   │   ├── types.ts               # 循环类型
@@ -549,8 +568,10 @@ src/
 └── web/                           # 浏览器实现
     ├── index.ts                   # WebAgent 入口
     ├── ref-store.ts               # #hashID → Element 映射
-    ├── event-listener-tracker.ts  # 全局事件追踪
-    ├── messaging.ts               # Extension 消息桥
+  ├── event-listener-tracker.ts  # 兼容转发层（-> core）
+  ├── messaging.ts               # 兼容转发层（-> core）
+  ├── snapshot.ts                # 兼容转发层（-> core）
+  ├── snapshot-engine.ts         # 兼容转发层（-> core）
     ├── ui/                        # 内置 UI 面板
     └── tools/                     # 工具实现
         ├── dom-tool.ts

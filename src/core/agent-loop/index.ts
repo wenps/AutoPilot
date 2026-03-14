@@ -17,7 +17,7 @@
  *      ├─ 有 toolCalls 吗？
  *      │    ├─ 没有：走收敛/协议修复判断（必要时等待后重试）
  *      │    └─ 有：逐个执行工具
- *      │         ├─ 冗余拦截（例如 page_info 空转）
+ *      │         ├─ 保护拦截（例如重复无效点击）
  *      │         ├─ 失败恢复（元素未找到重试）
  *      │         ├─ 导航后更新快照
  *      │         └─ 命中断轮条件则提前结束本轮
@@ -59,6 +59,7 @@ import {
   isPotentialDomMutation,
   isConfirmedProgressAction,
   computeSnapshotFingerprint,
+  computeSnapshotDiff,
   findNearbyClickTargets,
   sleep,
   toContentString,
@@ -78,6 +79,7 @@ import type {
   AgentLoopMetrics,
   PageContextState,
   ToolTraceEntry,
+  StopReason,
 } from "./types.js";
 import type { AIMessage } from "../types.js";
 
@@ -93,7 +95,7 @@ import type { AIMessage } from "../types.js";
  * 1) Ensure Snapshot：确保当前有最新快照（必要时读取）
  * 2) Build Messages：构建紧凑上下文（remaining + 上轮轨迹 + 最新快照）
  * 3) Call AI：请求模型并解析协议字段（`REMAINING` / `SNAPSHOT_HINT`）
- * 4) Execute Tools：执行工具调用并应用保护机制（冗余拦截、恢复、导航刷新）
+ * 4) Execute Tools：执行工具调用并应用保护机制（无效点击拦截、恢复、导航刷新）
  * 5) Reduce Remaining：推进剩余任务（优先协议，缺失时启发式剔除）
  * 6) Guard & Refresh：防空转/防自转判定，并刷新快照进入下一轮
  *
@@ -137,6 +139,7 @@ export async function executeAgentLoop(
 
   // 最终输出
   let finalReply = "";
+  let stopReason: StopReason = "max_rounds";
 
   // 循环控制状态
   let consecutiveReadOnlyRounds = 0;
@@ -286,6 +289,9 @@ export async function executeAgentLoop(
     fullToolTrace.push({ round, name, input, result });
   };
 
+  // 前一轮快照文本（用于计算快照变化摘要 diff）
+  let previousRoundSnapshot = "";
+
   // 主循环
   for (let round = 0; round < maxRounds; round++) {
     callbacks?.onRound?.(round);
@@ -298,6 +304,13 @@ export async function executeAgentLoop(
 
     // 记录本轮行动前的快照指纹，用于轮结束时检测操作是否产生页面变化
     const roundStartFingerprint = computeSnapshotFingerprint(pageContext.latestSnapshot || "");
+
+    // 计算快照变化摘要（Round 1+ 才有前一轮快照可对比）
+    const snapshotDiff = round > 0
+      ? computeSnapshotDiff(previousRoundSnapshot, pageContext.latestSnapshot || "")
+      : "";
+    // 保存当前快照供下一轮对比
+    previousRoundSnapshot = pageContext.latestSnapshot || "";
 
     // ═══ 阶段 2：构建紧凑消息 ═══
     // 每轮消息都自带快照（buildCompactMessages 注入），因此始终剥离
@@ -315,6 +328,7 @@ export async function executeAgentLoop(
       previousRoundModelOutput,
       previousRoundPlannedTasks,
       protocolViolationHint,
+      snapshotDiff,
     );
 
     if (pendingNotFoundRetry && pendingNotFoundRetry.tasks.length > 0) {
@@ -404,6 +418,7 @@ export async function executeAgentLoop(
 
       finalReply = response.text ?? "";
       if (finalReply) callbacks?.onText?.(finalReply);
+      stopReason = remainingInstruction.trim().length > 0 ? "protocol_fix_failed" : "converged";
       break;
     }
 
@@ -429,6 +444,7 @@ export async function executeAgentLoop(
     if (consecutiveSamePlannedBatch >= 3 && !lastRoundHadError) {
       finalReply = response.text?.trim() || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
+      stopReason = "repeated_batch";
       break;
     }
     if (consecutiveSamePlannedBatch >= 2 && !lastRoundHadError) {
@@ -459,6 +475,7 @@ export async function executeAgentLoop(
         }
         finalReply += `└────────────────────\n`;
       }
+      stopReason = "dry_run";
       break;
     }
 
@@ -616,6 +633,7 @@ export async function executeAgentLoop(
     ) {
       finalReply = response.text?.trim() || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
+      stopReason = "converged";
       break;
     }
 
@@ -624,6 +642,7 @@ export async function executeAgentLoop(
     if (idleResult === -1) {
       finalReply = response.text?.trim() || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
+      stopReason = "idle_loop";
       break;
     }
     consecutiveReadOnlyRounds = idleResult;
@@ -739,6 +758,7 @@ export async function executeAgentLoop(
     if (consecutiveNoProtocolRounds >= 5) {
       finalReply = response.text?.trim() || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
+      stopReason = "no_protocol";
       break;
     }
     if (consecutiveNoProtocolRounds >= 3) {
@@ -783,6 +803,7 @@ export async function executeAgentLoop(
     maxSnapshotSize: snapshotSizeMax,
     inputTokens,
     outputTokens,
+    stopReason,
   };
 
   // 统一发出指标回调
@@ -798,5 +819,6 @@ export type {
   AgentLoopResult,
   AgentLoopCallbacks,
   AgentLoopMetrics,
+  StopReason,
   RoundStabilityWaitOptions,
 } from "./types.js";

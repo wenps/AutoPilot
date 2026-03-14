@@ -7,6 +7,26 @@
 import type { AIMessage } from "../types.js";
 import type { ToolCallResult } from "../tool-registry.js";
 
+/**
+ * 停机原因枚举 — 标识 Agent Loop 因何原因结束。
+ *
+ * - `converged`：任务完成（REMAINING: DONE 或 remaining 收敛为空）
+ * - `repeated_batch`：连续相同工具调用批次 ≥ 3 轮（防自转）
+ * - `idle_loop`：连续只读轮次触发空转检测
+ * - `no_protocol`：连续多轮有工具调用但无 REMAINING 协议且无有效推进
+ * - `protocol_fix_failed`：协议修复轮失败（无工具调用 + remaining 未收敛）
+ * - `max_rounds`：达到最大轮次上限
+ * - `dry_run`：dry-run 模式，仅展示不执行
+ */
+export type StopReason =
+  | "converged"
+  | "repeated_batch"
+  | "idle_loop"
+  | "no_protocol"
+  | "protocol_fix_failed"
+  | "max_rounds"
+  | "dry_run";
+
 /** 轮次后稳定等待配置（加载态 + DOM 静默） */
 export type RoundStabilityWaitOptions = {
   /** 是否启用轮次后稳定等待（默认 true） */
@@ -33,6 +53,8 @@ export type AgentLoopMetrics = {
   maxSnapshotSize: number;
   inputTokens: number;
   outputTokens: number;
+  /** 停机原因（标识 Agent Loop 因何原因结束） */
+  stopReason: StopReason;
 };
 
 // ─── 回调接口 ───

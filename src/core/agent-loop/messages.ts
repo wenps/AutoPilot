@@ -200,6 +200,7 @@ export function buildCompactMessages(
   previousRoundModelOutput?: string,
   previousRoundPlannedTasks?: string[],
   protocolViolationHint?: string,
+  snapshotDiff?: string,
 ): AIMessage[] {
   const messages: AIMessage[] = history ? [...history] : [];
   const allowAgentUiInteraction = isExplicitAgentUiRequest(userMessage);
@@ -343,6 +344,15 @@ export function buildCompactMessages(
   }
 
   if (latestSnapshot) {
+    // 若有快照变化摘要，先注入即可读的 diff，再紧跟完整快照
+    if (snapshotDiff) {
+      contextParts.push(
+        "",
+        "## Snapshot Changes (since last round)",
+        "Lines prefixed with `-` were removed; `+` were added.",
+        snapshotDiff,
+      );
+    }
     // 注入最新快照
     contextParts.push(
       "",

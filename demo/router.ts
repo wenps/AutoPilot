@@ -7,6 +7,7 @@ import AppProvisionCreateView from './views/AppProvisionCreateView.vue'
 import FinanceReconciliationBatchCreateView from './views/FinanceReconciliationBatchCreateView.vue'
 import ServiceDeskEscalationCreateView from './views/ServiceDeskEscalationCreateView.vue'
 import PermissionPackageCreateView from './views/PermissionPackageCreateView.vue'
+import ElementPlaygroundView from './views/ElementPlaygroundView.vue'
 
 export type DemoRouteMeta = {
   title: string
@@ -104,6 +105,16 @@ export const demoMenuGroups: DemoMenuGroup[] = [
         title: '权限包模板',
         path: '/security/access-control/package/template/create',
         caption: '树形权限 + Tab + 资源组抽屉配置页',
+      },
+    ],
+  },
+  {
+    title: '组件实验室',
+    children: [
+      {
+        title: 'Element 测试台',
+        path: '/labs/element/playground',
+        caption: 'Tab + 常用组件集中测试页面',
       },
     ],
   },
@@ -208,6 +219,18 @@ const routes: RouteRecordRaw[] = [
       description: '权限包模板页，包含树形菜单勾选、数据范围配置和资源组抽屉。',
       scenario: '适合测试 AI 在复杂权限页面切换 Tab、配置资源组并最终保存模板。',
       breadcrumbs: ['安全中心', '访问控制', '权限包管理', '新建权限模板'],
+    } satisfies DemoRouteMeta,
+  },
+  {
+    path: '/labs/element/playground',
+    component: ElementPlaygroundView,
+    meta: {
+      title: 'Element 测试台',
+      section: '组件实验室',
+      code: 'lab:element:playground',
+      description: '集中展示 Tab、表单、表格、树、弹窗、抽屉等常用 Element 组件。',
+      scenario: '适合给 AI 做通用组件压测：切换 Tab、填写表单、操作表格、打开弹窗并确认。',
+      breadcrumbs: ['组件实验室', 'Element 测试台'],
     } satisfies DemoRouteMeta,
   },
 ]

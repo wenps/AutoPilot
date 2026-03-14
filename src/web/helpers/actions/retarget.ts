@@ -12,6 +12,7 @@
  */
 import { isElementVisible } from "../base/visibility.js";
 import { findFormItemContainer } from "../base/form-item.js";
+import { getTrackedElementEvents } from "../../../core/event-listener-tracker.js";
 
 // ─── retarget（参考 Playwright injectedScript.retarget） ───
 
@@ -25,10 +26,18 @@ export type RetargetMode = "none" | "follow-label" | "button-link";
 export function retarget(el: Element, mode: RetargetMode): Element {
   if (mode === "none") return el;
   if (!el.matches("input, textarea, select") && !(el as HTMLElement).isContentEditable) {
-    if (mode === "button-link") {
-      el = el.closest("button, [role=button], a, [role=link]") || el;
-    } else {
-      el = el.closest("button, [role=button], [role=checkbox], [role=radio]") || el;
+    // 如果元素本身有 click/pointerdown/mousedown 追踪事件，
+    // 说明它是独立的交互目标，不应被回溯到祖先 button/link。
+    // 典型场景：el-color-picker 内层 div 有 @click="handleTrigger"，
+    // 若回溯到外层 button 则永远无法触发面板打开。
+    const tracked = getTrackedElementEvents(el);
+    const hasSelfClickSignal = tracked.includes("click") || tracked.includes("mousedown") || tracked.includes("pointerdown");
+    if (!hasSelfClickSignal) {
+      if (mode === "button-link") {
+        el = el.closest("button, [role=button], a, [role=link]") || el;
+      } else {
+        el = el.closest("button, [role=button], [role=checkbox], [role=radio]") || el;
+      }
     }
   }
   if (mode === "follow-label") {

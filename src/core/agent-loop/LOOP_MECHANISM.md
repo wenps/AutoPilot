@@ -26,10 +26,16 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 - `messages.ts`
   - Round 0 / Round 1+ 消息构建
   - REMAINING 协议上下文注入
+- `snapshot/`
+  - `lifecycle.ts`：读取/包裹/去重/剥离快照
+  - `engine.ts`：DOM 快照序列化实现
+  - `index.ts`：snapshot 子模块聚合导出
 - `snapshot.ts`
-  - 读取/包裹/去重/剥离快照
+  - 兼容转发层（re-export -> `snapshot/lifecycle.ts`）
+- `recovery/`
+  - `index.ts`：恢复、导航刷新、空转检测、无效点击拦截
 - `recovery.ts`
-  - 冗余拦截、恢复、空转检测
+  - 兼容转发层（re-export -> `recovery/index.ts`）
 - `helpers.ts`
   - 协议解析、任务规整、断轮规则等纯函数
 
@@ -43,14 +49,17 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 
 - 若当前无快照，调用 `readPageSnapshot()` 读取
 - 记录快照统计（读取次数、长度）
+- 计算快照指纹（用于轮结束时变化检测）
+- Round 1+：对比前一轮保存的快照，计算 `snapshotDiff`（hashID 归一化后逐行对比）
 
 ### 阶段 B：构建消息
 
 - 先剥离 system prompt 里的历史快照（避免重复注入）
 - 使用 `buildCompactMessages()` 构建本轮上下文
   - Round 0：原始任务 + 快照 + 关键行为强化（批量执行、禁 page_info、DOM 断轮、Effect check）
-  - Round 1+：remaining + done steps + 关键强化 + previous executed + effect hint + snapshot
+  - Round 1+：remaining + done steps + 关键强化 + previous executed + effect hint + snapshot changes diff + snapshot
   - 不再重复 system prompt 中已有的规则，仅补强模型易违反的关键条
+  - 若 snapshotDiff 非空，在快照前注入 `## Snapshot Changes (since last round)` 区块
 - 若处于“元素未找到重试流”，额外注入 retry context
 
 ### 阶段 C：调用模型并解析协议
@@ -76,11 +85,10 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 - 先做重复批次检测（防自转）
 - `dryRun` 模式直接输出计划，不执行工具
 - 正常模式逐个执行工具，并串联保护机制：
-  1) 冗余 `page_info.*` 拦截
-  2) 快照防抖
-  3) 元素未找到恢复
-  4) 导航后快照刷新
-  5) 必要时断轮（例如 `navigate.*`、`evaluate`、`dom.press Enter`）
+  1) 重复无效点击拦截
+  2) 元素未找到恢复
+  3) 导航后快照刷新
+  4) 必要时断轮（例如 `navigate.*`、`evaluate`、`dom.press Enter`）
 
 ### 阶段 E：推进 remaining
 
@@ -124,6 +132,7 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 - `previousRoundTasks`：上一轮已执行任务数组
 - `previousRoundPlannedTasks`：上一轮模型计划数组
 - `previousRoundModelOutput`：上一轮模型输出摘要
+- `previousRoundSnapshot`：上一轮快照文本（用于计算 snapshotDiff）
 - `protocolViolationHint`：协议修复提示
 - `pendingNotFoundRetry`：元素未找到重试上下文
 
@@ -131,31 +140,23 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 
 ## 5. 保护机制
 
-### 5.1 冗余拦截
-
-- 拦截循环内无意义 `page_info.*`，防止“只看不做”
-
-### 5.2 快照防抖
-
-- 连续 `page_info.snapshot` 标记冗余，提醒继续执行动作
-
-### 5.3 元素恢复
+### 5.1 元素恢复
 
 - `ELEMENT_NOT_FOUND` 时自动等待 + 刷新快照 + 限次重试
 
-### 5.4 导航刷新
+### 5.2 导航刷新
 
 - 导航成功后立即刷新快照，避免旧上下文决策
 
-### 5.5 空转检测
+### 5.3 空转检测
 
 - 连续纯只读轮次停机
 
-### 5.6 重复批次防自转
+### 5.4 重复批次防自转
 
 - 连续返回相同任务批次且无错误时提前停机
 
-### 5.7 无效点击拦截与循环检测
+### 5.5 无效点击拦截与循环检测
 
 - 快照指纹未变时，将本轮 click selector 加入 `ineffectiveClickSelectors`，下一轮再次点击直接拦截。
 - 快照变化时，仅移除本轮点击的 selector（可能是它们引发了变化），保留其他轮次标记的无效 selector。
@@ -169,7 +170,7 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
   - 触发场景：“Snapshot unchanged” 提示 / `INEFFECTIVE_CLICK_BLOCKED` 拦截响应 / 交替循环检测提示
   - 设计目的：给模型具体的替代 hashID 而非泛泛建议，避免反复盲猜
 
-### 5.8 操作稳定性（轮次后双重等待）
+### 5.6 操作稳定性（轮次后双重等待）
 
 - 触发条件：本轮出现潜在 DOM 变化动作（例如 `dom.click/fill/select_option/scroll/press`、`navigate.*`、`evaluate`）且动作无错误。
 - 执行顺序固定：
@@ -178,18 +179,30 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 - 默认参数：`timeoutMs=4000`、`quietMs=200`。
 - 选择器语义：`roundStabilityWait.loadingSelectors` 与默认列表合并去重，不覆盖默认值。
 - 设计目的：在保证收敛性的同时，减少“页面尚未稳定即继续操作”导致的误点与空转。
+### 5.7 快照变化摘要（Snapshot Diff）
 
+- 每轮阶段 A 保存当前快照文本到 `previousRoundSnapshot`。
+- Round 1+：通过 `computeSnapshotDiff(previousRoundSnapshot, currentSnapshot)` 计算变化摘要。
+  - hashID 归一化（`#abc123` → `#_`），消除 DOM 重渲染噪音。
+  - 逐行对比，输出 `- removed` / `+ added` 格式，最多 20 行。
+- diff 非空时，在快照前注入 `## Snapshot Changes (since last round)` 区块。
+- 与指纹检测互补：指纹只判断"变没变"，diff 告诉 AI "变了什么"。
+- 典型场景：开关 toggle 后 `checked` / `is-checked` 消失、颜色选择器 `bg` 变化、表单值更新等微小状态变化。
 ---
 
-## 6. 停机条件
+## 6. 停机条件与 stopReason
 
-命中任一条件即停止：
+命中任一条件即停止，同时在 `metrics.stopReason` 中记录精确的停机原因枚举值：
 
-1) remaining 收敛（`REMAINING: DONE` 或为空）
-2) 协议缺失计数达到阈值（仅无页面变化 + 无确定性推进的轮次计入）
-3) 连续只读（空转）
-4) 连续重复计划批次（自转）
-5) 达到 `maxRounds`
+| 停机条件 | stopReason 枚举值 |
+| --- | --- |
+| remaining 收敛（`REMAINING: DONE` 或为空） | `converged` |
+| 连续相同工具调用批次 ≥ 3 轮（防自转） | `repeated_batch` |
+| 连续只读轮次（空转） | `idle_loop` |
+| 连续多轮有工具调用但无 REMAINING 协议且无有效推进 | `no_protocol` |
+| 协议修复轮失败（无工具调用 + remaining 未收敛） | `protocol_fix_failed` |
+| 达到 `maxRounds` | `max_rounds` |
+| dry-run 模式 | `dry_run` |
 
 ---
 
@@ -205,6 +218,7 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
   - 恢复次数、拦截次数
   - 快照读取次数与体积统计
   - token 输入/输出统计
+  - `stopReason`：停机原因枚举（`converged` / `repeated_batch` / `idle_loop` / `no_protocol` / `protocol_fix_failed` / `max_rounds` / `dry_run`）
 
 ---
 
