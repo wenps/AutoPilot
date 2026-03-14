@@ -31,6 +31,13 @@ export type SystemPromptParams = {
   listenerEvents?: string[];
   /** 额外英文指令（字符串或字符串数组）。 */
   extraInstructions?: string | string[];
+  /**
+   * 断言任务描述列表（可选）。
+   *
+   * 传入后会在 system prompt 中注入断言能力说明，
+   * 告知 AI 可以在合适时机调用 assert 工具触发断言验证。
+   */
+  assertionTasks?: Array<{ task: string; description: string }>;
 };
 
 const LISTENER_ABBREV_MAP: Record<string, string> = {
@@ -176,7 +183,8 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
       "- Dropdown/select: prefer dom.select_option (works in one round). For custom dropdowns requiring click-to-open: click → wait for next snapshot → click option (two rounds).",
       "- Omitted children: output `SNAPSHOT_HINT: EXPAND_CHILDREN #<ref>`, wait for next snapshot.",
       "- Do NOT verify values unless user explicitly asks.",
-      "- Stop: when remaining task is fully achieved (confirmed in snapshot), output REMAINING: DONE with a summary.",
+      "- Completion = visible outcome in snapshot, not every planned sub-step executed. If snapshot already shows the expected result (color changed, switch toggled, value present, dialog closed, etc.), the task IS done.",
+      "- Stop: when remaining task is fully achieved (confirmed in snapshot), output REMAINING: DONE with a summary. Do NOT call page_info or retry to verify — the snapshot is authoritative.",
       "- Do NOT interact with AutoPilot UI unless user asks.",
       "",
 
@@ -213,6 +221,41 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
         ...extraInstructions.map(line => `- ${line}`),
       ].join("\n"),
     );
+  }
+
+  // ─── 章节 6：断言能力说明（始终注入） ───
+  // assert 是内置工具，AI 认为任务完成时主动调用。
+  {
+    const lines: string[] = [
+      "## Assertion Capability",
+      "You have an `assert` tool to verify task completion. When called, an independent verification AI will judge whether the task has been fulfilled based on the current snapshot and your actions.",
+      "",
+      "### When to call assert",
+      "- Call `assert` AFTER you believe the task is complete and the expected outcome should be visible in the snapshot.",
+      "- You can include `assert` alongside other tool calls in the same round. The framework will execute all other tools first, wait for page stability, then run the assertion.",
+      "- Do NOT call `assert` on every round — only when you expect the task to pass verification.",
+      "- Avoid calling `assert` immediately after a DOM-changing action in the same round if the effect may not be visible yet; wait for the next round's snapshot.",
+    ];
+
+    if (params.assertionTasks && params.assertionTasks.length > 0) {
+      const taskLines = params.assertionTasks.map(
+        (a, i) => `  ${i + 1}. "${a.task}": ${a.description}`,
+      );
+      lines.push(
+        "",
+        "### Task assertions to verify",
+        ...taskLines,
+      );
+    }
+
+    lines.push(
+      "",
+      "### How to call",
+      "Call the `assert` tool with no parameters: `assert({})`",
+      "The framework handles all assertion logic internally.",
+    );
+
+    sections.push(lines.join("\n"));
   }
 
   return sections.join("\n\n");

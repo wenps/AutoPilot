@@ -36,6 +36,10 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
   - `index.ts`：恢复、导航刷新、空转检测、无效点击拦截
 - `recovery.ts`
   - 兼容转发层（re-export -> `recovery/index.ts`）
+- `assertion/`
+  - `types.ts`：断言类型定义（TaskAssertion / AssertionConfig / AssertionResult / TaskAssertionResult）
+  - `prompt.ts`：断言专用 prompt 构建（独立 AI 调用，不继承 system prompt）
+  - `index.ts`：断言评估引擎（evaluateAssertions）
 - `helpers.ts`
   - 协议解析、任务规整、断轮规则等纯函数
 
@@ -188,6 +192,29 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 - diff 非空时，在快照前注入 `## Snapshot Changes (since last round)` 区块。
 - 与指纹检测互补：指纹只判断"变没变"，diff 告诉 AI "变了什么"。
 - 典型场景：开关 toggle 后 `checked` / `is-checked` 消失、颜色选择器 `bg` 变化、表单值更新等微小状态变化。
+
+### 5.8 断言能力（Assertion）
+
+- **目标**：通过独立 AI 调用判断任务是否已完成，替代模型自行收敛的不可靠性（如反复空转、不输出 `REMAINING: DONE`）。
+- **触发方式**：执行 AI 主动调用 `assert({})` 工具，断言不会自动触发。
+  - system prompt 中告知模型具备断言能力，并列出所有任务断言条目。
+  - 模型在认为任务可能完成时返回 `assert` 工具调用。
+  - `assert` 可与其他工具调用在同一轮共存——先执行其他工具，等待稳定屏障后再触发断言。
+- **评估流程**：
+  1. 从 `fullToolTrace` 聚合已执行动作摘要（工具名 + 输入简述 + 是否成功）。
+  2. 读取最新页面快照。
+  3. 调用 `evaluateAssertions()`：使用独立 AI 请求（**无 tools、无 system prompt 继承**），仅传入断言专用 prompt + 快照 + 动作摘要 + 任务断言列表。
+  4. 断言 AI 返回 JSON 数组，每条包含 `task`、`passed`（boolean）、`reason`。
+  5. 汇总为 `AssertionResult { allPassed, total, passed, failed, details[] }`。
+- **停机逻辑**：
+  - `allPassed = true`：循环终止，`stopReason = "assertion_passed"`。
+  - `allPassed = false`：将失败原因注入下一轮上下文（`## Assertion Progress` 区块），继续循环。
+- **断言进度注入**（Round 1+）：
+  - 若 `lastAssertionResult` 存在且 `!allPassed`，在快照前注入 `## Assertion Progress (x/y passed)` 区块。
+  - 已通过的断言标 `✓`、失败的标 `✗`，附带 AI 判定理由。
+  - 提示 AI 聚焦失败断言，不重复已通过的操作；在认为失败项修复后再次调用 `assert({})`。
+- **配置入口**：`ChatOptions.assertionConfig.taskAssertions[]`，每条包含 `task`（断言标识）和 `description`（AI 可理解的判定描述）。
+- **工具注册**：`assert` 工具在 `chat()` 开始时动态注册（schema 为空对象），结束后注销。
 ---
 
 ## 6. 停机条件与 stopReason
@@ -197,8 +224,10 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
 | 停机条件 | stopReason 枚举值 |
 | --- | --- |
 | remaining 收敛（`REMAINING: DONE` 或为空） | `converged` |
+| 断言全部通过（`assert` 工具触发且 `allPassed`） | `assertion_passed` |
 | 连续相同工具调用批次 ≥ 3 轮（防自转） | `repeated_batch` |
 | 连续只读轮次（空转） | `idle_loop` |
+| remaining 连续不推进且无确认性进展 ≥ 3 轮（滞止收敛） | `stale_remaining` |
 | 连续多轮有工具调用但无 REMAINING 协议且无有效推进 | `no_protocol` |
 | 协议修复轮失败（无工具调用 + remaining 未收敛） | `protocol_fix_failed` |
 | 达到 `maxRounds` | `max_rounds` |
@@ -218,7 +247,8 @@ Agent Loop 是一个“快照驱动的增量执行循环”：
   - 恢复次数、拦截次数
   - 快照读取次数与体积统计
   - token 输入/输出统计
-  - `stopReason`：停机原因枚举（`converged` / `repeated_batch` / `idle_loop` / `no_protocol` / `protocol_fix_failed` / `max_rounds` / `dry_run`）
+  - `stopReason`：停机原因枚举（`converged` / `assertion_passed` / `repeated_batch` / `idle_loop` / `stale_remaining` / `no_protocol` / `protocol_fix_failed` / `max_rounds` / `dry_run`）
+- `assertionResult`（可选）：断言评估结果（`allPassed` / `total` / `passed` / `failed` / `details[]`），仅当触发过 `assert` 工具时存在
 
 ---
 

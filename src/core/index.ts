@@ -107,6 +107,16 @@ export {
   type RoundStabilityWaitOptions,
   /** 包裹快照边界文本 / Wrap snapshot with boundary markers. */
   wrapSnapshot,
+  /** 断言评估入口 / Evaluate task assertions via independent AI call. */
+  evaluateAssertions,
+  /** 任务断言定义类型 / Single task assertion definition. */
+  type TaskAssertion,
+  /** 断言配置类型 / Assertion config with task list. */
+  type AssertionConfig,
+  /** 断言结果类型 / Overall assertion evaluation result. */
+  type AssertionResult,
+  /** 单任务断言结果类型 / Per-task assertion result. */
+  type TaskAssertionResult,
 } from "./agent-loop/index.js";
 
 // ─────────────────────────────────────────────────────────────────────────────

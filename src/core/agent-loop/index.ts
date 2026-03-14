@@ -61,18 +61,23 @@ import {
   computeSnapshotFingerprint,
   computeSnapshotDiff,
   findNearbyClickTargets,
+  splitUserGoalIntoTasks,
+  updateTaskCompletion,
+  formatTaskChecklist,
+  deriveRemainingFromTasks,
   sleep,
   toContentString,
   hasToolError,
 } from "./helpers.js";
 import { readPageSnapshot, stripSnapshotFromPrompt } from "./snapshot/index.js";
-import { buildCompactMessages } from "./messages.js";
+import { buildCompactMessages, formatToolInputBrief } from "./messages.js";
 import {
   checkIneffectiveClickRepeat,
   handleElementRecovery,
   handleNavigationUrlChange,
   detectIdleLoop,
 } from "./recovery/index.js";
+import { evaluateAssertions } from "./assertion/index.js";
 import type {
   AgentLoopParams,
   AgentLoopResult,
@@ -80,6 +85,7 @@ import type {
   PageContextState,
   ToolTraceEntry,
   StopReason,
+  TaskItem,
 } from "./types.js";
 import type { AIMessage } from "../types.js";
 
@@ -125,6 +131,7 @@ export async function executeAgentLoop(
     dryRun = false,
     maxRounds = DEFAULT_MAX_ROUNDS,
     roundStabilityWait,
+    assertionConfig,
     callbacks,
   } = params;
 
@@ -140,6 +147,7 @@ export async function executeAgentLoop(
   // 最终输出
   let finalReply = "";
   let stopReason: StopReason = "max_rounds";
+  let lastAssertionResult: import("./assertion/types.js").AssertionResult | undefined;
 
   // 循环控制状态
   let consecutiveReadOnlyRounds = 0;
@@ -158,10 +166,18 @@ export async function executeAgentLoop(
   let previousRoundTasks: string[] = [];
   let previousRoundPlannedTasks: string[] = [];
   let previousRoundModelOutput = "";
+
+  // 结构化任务拆分：多步任务（"A，然后B，然后C"）拆成 checklist
+  let taskItems: TaskItem[] | null = splitUserGoalIntoTasks(message);
+
   let lastPlannedBatchKey = "";
   let consecutiveSamePlannedBatch = 0;
   let lastRoundHadError = false;
   let protocolViolationHint: string | undefined;
+
+  // 滞止检测：remaining 连续不推进且无确认性进展时，先发出强制收敛提示，超过上限后强制停机。
+  let previousRoundRemaining = remainingInstruction;
+  let consecutiveNoProgressRounds = 0;
   const snapshotExpandRefIds = new Set<string>();
   const effectiveRoundStabilityWait = {
     enabled: roundStabilityWait?.enabled ?? true,
@@ -329,6 +345,8 @@ export async function executeAgentLoop(
       previousRoundPlannedTasks,
       protocolViolationHint,
       snapshotDiff,
+      taskItems ? formatTaskChecklist(taskItems) : undefined,
+      lastAssertionResult,
     );
 
     if (pendingNotFoundRetry && pendingNotFoundRetry.tasks.length > 0) {
@@ -481,8 +499,14 @@ export async function executeAgentLoop(
 
     // ═══ 阶段 4：执行工具调用（带保护机制）═══
 
+    // 分离 assert 调用与普通工具调用：
+    // assert 需要在所有操作工具执行完 + 页面稳定后再发起，
+    // 以便基于最新快照做判定。
+    const regularToolCalls = response.toolCalls.filter(tc => tc.name !== "assert");
+    const assertToolCall = response.toolCalls.find(tc => tc.name === "assert");
+
     // 批量执行所有工具调用
-    // roundHasError 用于控制“重复批次停机”：上一轮有错误时，不应武断终止。
+    // roundHasError 用于控制"重复批次停机"：上一轮有错误时，不应武断终止。
     let roundHasError = false;
     let roundHasPotentialDomMutation = false;
     let roundHasConfirmedProgress = false;
@@ -490,7 +514,7 @@ export async function executeAgentLoop(
     const roundMissingTasks: MissingToolTask[] = [];
     // 本轮实际执行的 click selector，用于轮末无效点击判定
     const roundClickSelectors: string[] = [];
-    for (const tc of response.toolCalls) {
+    for (const tc of regularToolCalls) {
 
       // 自动策略：当 AI 对 hash 列表执行 scroll 时，默认下一轮对该节点放宽 children 截断。
       // 这样即使模型未显式输出 SNAPSHOT_HINT，也能尽快拿到完整列表选项。
@@ -581,6 +605,57 @@ export async function executeAgentLoop(
       }
     }
 
+    // ═══ 断言处理：assert 工具与其他工具一起返回时，先等稳定再发起断言 ═══
+    if (assertToolCall) {
+      // 先等页面稳定（若本轮有 DOM 变更动作）
+      if (roundHasPotentialDomMutation) {
+        await runRoundStabilityBarrier();
+      }
+      // 断言前清除 hover 等瞬态视觉状态，确保快照反映真实持久状态
+      await callbacks?.onBeforeAssertionSnapshot?.();
+      // 刷新快照确保基于最新状态判定
+      await refreshSnapshot();
+
+      // 确定断言列表：有自定义配置用配置，否则以用户原始消息作为整体断言
+      const taskAssertions = (assertionConfig && assertionConfig.taskAssertions.length > 0)
+        ? assertionConfig.taskAssertions
+        : [{ task: "Complete user task", description: message }];
+
+      // 构建已执行操作摘要，发给断言 AI
+      const actionSummaries = fullToolTrace.map(
+        entry => `${entry.name}${formatToolInputBrief(entry.input)}`,
+      );
+
+      callbacks?.onToolCall?.("assert", assertToolCall.input);
+
+      const assertionResult = await evaluateAssertions(
+        client,
+        pageContext.latestSnapshot || "",
+        actionSummaries,
+        taskAssertions,
+      );
+      lastAssertionResult = assertionResult;
+
+      // 将断言结果作为 assert 工具的执行结果记录
+      const assertResult = {
+        content: assertionResult.allPassed
+          ? `All ${assertionResult.total} assertions PASSED.`
+          : `Assertions: ${assertionResult.passed}/${assertionResult.total} passed. Failed: ${assertionResult.details.filter(d => !d.passed).map(d => `"${d.task}": ${d.reason}`).join("; ")}`,
+        details: { assertionResult },
+      };
+      appendToolTrace(round, "assert", assertToolCall.input, assertResult);
+      executedTaskCalls.push({ name: "assert", input: assertToolCall.input });
+      callbacks?.onToolResult?.("assert", assertResult);
+
+      // 总断言通过：立即收敛
+      if (assertionResult.allPassed) {
+        finalReply = response.text?.trim() || "任务已完成（断言验证全部通过）。";
+        if (finalReply) callbacks?.onText?.(finalReply);
+        stopReason = "assertion_passed";
+        break;
+      }
+    }
+
     if (roundMissingTasks.length > 0) {
       pendingNotFoundRetry = {
         attempt: 1,
@@ -609,6 +684,17 @@ export async function executeAgentLoop(
         } else {
           consecutiveNoProtocolRounds = 0;
         }
+      }
+    }
+
+    // 同步结构化任务进度：根据当前 remaining 更新 checklist 完成状态
+    if (taskItems) {
+      taskItems = updateTaskCompletion(taskItems, remainingInstruction);
+      // 当模型未遵循 REMAINING 协议时，从 checklist 反推 remaining，
+      // 确保 remaining 与 checklist 状态一致
+      if (!parsedInstructionState.hasRemainingProtocol) {
+        const derived = deriveRemainingFromTasks(taskItems);
+        if (derived) remainingInstruction = derived;
       }
     }
 
@@ -646,6 +732,36 @@ export async function executeAgentLoop(
       break;
     }
     consecutiveReadOnlyRounds = idleResult;
+
+    // 保护 8：滞止检测（remaining 连续不推进 + 无确认性进展）
+    // 典型场景：任务已通过快照可见完成，但模型不主动输出 REMAINING: DONE，
+    // 转而反复尝试 click OK、page_info 等无实质推进的动作。
+    // 仅在多步任务（taskItems 存在）时激活，单步任务由 idle_loop/no_protocol 处理。
+    if (taskItems && remainingInstruction === previousRoundRemaining && !roundHasConfirmedProgress) {
+      consecutiveNoProgressRounds++;
+    } else if (remainingInstruction !== previousRoundRemaining || roundHasConfirmedProgress) {
+      consecutiveNoProgressRounds = 0;
+    }
+    previousRoundRemaining = remainingInstruction;
+
+    if (consecutiveNoProgressRounds >= 3) {
+      finalReply = response.text?.trim() || "任务已完成。";
+      if (finalReply) callbacks?.onText?.(finalReply);
+      stopReason = "stale_remaining";
+      break;
+    }
+    if (consecutiveNoProgressRounds >= 2) {
+      const staleHint = [
+        "CRITICAL — No progress detected:",
+        `- Remaining has NOT advanced for ${consecutiveNoProgressRounds} consecutive rounds with no confirmed progress.`,
+        "- The snapshot may ALREADY show your task is complete.",
+        "CHECK the snapshot NOW: if the expected outcome is visible (color changed, switch toggled, value present, dialog closed, form submitted, etc.), output REMAINING: DONE immediately with NO tool calls.",
+        "Do NOT call page_info, do NOT retry failed actions, do NOT click verify/confirm buttons if the result is already visible.",
+      ].join("\n");
+      protocolViolationHint = protocolViolationHint
+        ? protocolViolationHint + "\n\n" + staleHint
+        : staleHint;
+    }
 
     if (roundHasPotentialDomMutation) {
       await runRoundStabilityBarrier();
@@ -809,11 +925,18 @@ export async function executeAgentLoop(
   // 统一发出指标回调
   callbacks?.onMetrics?.(metrics);
 
-  return { reply: finalReply, toolCalls: allToolCalls, messages: resultMessages, metrics };
+  return {
+    reply: finalReply,
+    toolCalls: allToolCalls,
+    messages: resultMessages,
+    metrics,
+    ...(lastAssertionResult ? { assertionResult: lastAssertionResult } : {}),
+  };
 }
 
 // ─── Re-exports（维持外部 API 不变）───
 export { wrapSnapshot } from "./snapshot/index.js";
+export { evaluateAssertions } from "./assertion/index.js";
 export type {
   AgentLoopParams,
   AgentLoopResult,
@@ -822,3 +945,9 @@ export type {
   StopReason,
   RoundStabilityWaitOptions,
 } from "./types.js";
+export type {
+  TaskAssertion,
+  AssertionConfig,
+  AssertionResult,
+  TaskAssertionResult,
+} from "./assertion/types.js";

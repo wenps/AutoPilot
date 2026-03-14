@@ -36,6 +36,7 @@
  */
 import type { ToolCallResult } from "../tool-registry.js";
 import { DEFAULT_RECOVERY_WAIT_MS } from "./constants.js";
+import type { TaskItem } from "./types.js";
 
 /**
  * 异步睡眠。
@@ -517,6 +518,104 @@ export function reduceRemainingHeuristically(
   const nextParts = parts.slice(Math.min(executedCount, parts.length));
   if (nextParts.length === 0) return "";
   return nextParts.join(" -> ");
+}
+
+// ─── 结构化任务拆分与追踪 ───
+
+/** 多步任务拆分正则（复用 reduceRemainingHeuristically 的分隔符） */
+const TASK_SPLIT_RE = /\s*(?:然后|再|并且|并|接着|随后|之后)\s*/g;
+
+/** 标准化分隔符（逗号、箭头等统一为"然后"），然后拆分 */
+function _normAndSplit(text: string): string[] {
+  const normalized = text
+    .replace(/\s+/g, " ")
+    .replace(/(->|=>|→)/g, " 然后 ")
+    .replace(/[，,。；;]/g, " 然后 ");
+  return normalized.split(TASK_SPLIT_RE).map(s => s.trim()).filter(Boolean);
+}
+
+/**
+ * 将用户输入拆分为结构化任务列表。
+ *
+ * 仅当文本包含步骤分隔符（然后/再/接着/逗号/箭头等）且可拆出 ≥ 2 步时才返回 TaskItem 数组。
+ * 单步任务返回 null，由调用方决定不启用 checklist。
+ *
+ * @example
+ * ```ts
+ * splitUserGoalIntoTasks("主题色选红色，然后关闭开关，然后满意度五星")
+ * // → [{ text: "主题色选红色", done: false }, { text: "关闭开关", done: false }, { text: "满意度五星", done: false }]
+ *
+ * splitUserGoalIntoTasks("提交表单")
+ * // → null（单步，不拆分）
+ * ```
+ */
+export function splitUserGoalIntoTasks(userMessage: string): TaskItem[] | null {
+  const parts = _normAndSplit(userMessage);
+  if (parts.length < 2) return null;
+  return parts.map(text => ({ text, done: false }));
+}
+
+/**
+ * 根据当前 remaining 字符串更新任务完成状态。
+ *
+ * 策略：如果某个 task 的文本关键词不再出现在 remaining 中，标记为 done。
+ * remaining 为空或 "DONE" 时，全部标记完成。
+ *
+ * 返回更新后的 TaskItem 数组（不修改原数组）。
+ */
+export function updateTaskCompletion(tasks: TaskItem[], remaining: string): TaskItem[] {
+  const trimmed = remaining.trim();
+  if (!trimmed || /^done$/i.test(trimmed)) {
+    return tasks.map(t => ({ ...t, done: true }));
+  }
+
+  const lowerRemaining = trimmed.toLowerCase();
+  return tasks.map(t => {
+    if (t.done) return t;
+    // 提取 task 中 ≥ 2 字的中文词或 ≥ 3 字的英文词作为关键词
+    const keywords = t.text.match(/[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}/g);
+    if (!keywords || keywords.length === 0) return t;
+    // 所有关键词都不在 remaining 中 → 认为该任务已完成
+    const allAbsent = keywords.every(kw => !lowerRemaining.includes(kw.toLowerCase()));
+    return allAbsent ? { ...t, done: true } : t;
+  });
+}
+
+/**
+ * 将 TaskItem 数组格式化为 checklist 字符串。
+ *
+ * 用于注入到用户消息中，让模型清楚看到每一步的完成状态。
+ *
+ * @example
+ * ```ts
+ * formatTaskChecklist([
+ *   { text: "主题色选红色", done: true },
+ *   { text: "关闭开关", done: false },
+ *   { text: "满意度五星", done: false },
+ * ])
+ * // → "✅ 1. 主题色选红色\n□ 2. 关闭开关  ← current\n□ 3. 满意度五星"
+ * ```
+ */
+export function formatTaskChecklist(tasks: TaskItem[]): string {
+  let firstPending = true;
+  return tasks.map((t, i) => {
+    const num = i + 1;
+    if (t.done) return `✅ ${num}. ${t.text}`;
+    const marker = firstPending ? "  ← current" : "";
+    firstPending = false;
+    return `□ ${num}. ${t.text}${marker}`;
+  }).join("\n");
+}
+
+/**
+ * 从 TaskItem 数组生成当前 remaining 文本（所有未完成任务拼接）。
+ *
+ * 用于同步 remainingInstruction，保持与 checklist 一致。
+ */
+export function deriveRemainingFromTasks(tasks: TaskItem[]): string {
+  const pending = tasks.filter(t => !t.done).map(t => t.text);
+  if (pending.length === 0) return "";
+  return pending.join(" -> ");
 }
 
 /**

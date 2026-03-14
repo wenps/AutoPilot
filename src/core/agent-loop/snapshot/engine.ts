@@ -633,16 +633,6 @@ export function generateSnapshot(
       if (!attrs.includes("checked")) attrs.push("checked");
     }
 
-    // 7.2 输出 ARIA 状态属性（aria-checked / aria-expanded / aria-selected）。
-    // 这些属性为开关、手风琴、Tab 等 ARIA 组件提供明确的双向状态信号，
-    // 避免 AI 只能靠 class/checked 缺失来判断 OFF 状态。
-    for (const ariaAttr of ["aria-checked", "aria-expanded", "aria-selected"] as const) {
-      const ariaVal = el.getAttribute(ariaAttr);
-      if (ariaVal !== null) {
-        attrs.push(`${ariaAttr}="${ariaVal}"`);
-      }
-    }
-
     // 8. 对于 select，补充当前选中 value；对于 option，按运行时 selected 状态输出
     if (el instanceof HTMLSelectElement && el.value) {
       attrs.push(`val="${sanitizeSnapshotAttrValue(el.value).slice(0, 40)}"`);

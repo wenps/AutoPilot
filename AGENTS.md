@@ -42,6 +42,10 @@ src/
 │   │   ├── recovery.ts          # 兼容转发层（re-export -> recovery/index）
 │   │   ├── recovery/
 │   │   │   └── index.ts
+│   │   ├── assertion/
+│   │   │   ├── types.ts
+│   │   │   ├── prompt.ts
+│   │   │   └── index.ts
 │   │   └── LOOP_MECHANISM.md   # Agent Loop 权威机制说明（必须同步维护）
 │   └── ai-client/
 │       ├── index.ts
@@ -235,9 +239,10 @@ src/
 - `messages.ts`
   - 紧凑消息构建
   - Round 0 注入“原始任务 + 快照 + 关键行为强化”
-  - Round 1+ 注入"remaining + done steps + previous executed + effect check + previous model output + snapshot changes diff + latest snapshot"
+  - Round 1+ 注入"remaining + done steps + previous executed + effect check + previous model output + assertion progress + snapshot changes diff + latest snapshot"
   - 效果检查（Effect check）：通过简短提示要求 AI 确认上轮操作是否生效，非阻塞式设计避免分析瘧痪
   - 快照变化摘要（Snapshot Changes）：diff 非空时在快照前注入 `## Snapshot Changes`，让 AI 直接看到前后轮变化
+  - 断言进度（Assertion Progress）：lastAssertionResult 未全通过时，在快照前注入 `## Assertion Progress`，标记每条断言的通过/失败状态及理由
 
 - `snapshot/`
   - `lifecycle.ts`：读取页面 URL/快照、快照包裹与去重、prompt 中旧快照剥离
@@ -245,6 +250,11 @@ src/
   - `index.ts`：snapshot 子模块聚合导出
 - `snapshot.ts`
   - 兼容转发层（re-export -> `snapshot/lifecycle.ts`）
+
+- `assertion/`
+  - `types.ts`：断言类型定义（`TaskAssertion` / `AssertionConfig` / `AssertionResult` / `TaskAssertionResult`）
+  - `prompt.ts`：断言专用 prompt 构建（`buildAssertionSystemPrompt` / `buildAssertionUserMessage`），独立 AI 调用不继承 system prompt
+  - `index.ts`：断言评估引擎（`evaluateAssertions`），发起无 tools 的独立 AI 请求并解析 JSON 结果
 
 ### core
 
@@ -327,10 +337,26 @@ src/
 - 当"remaining 未完成 + 无工具调用"出现时，不直接结束
 - 下一轮注入 protocol violation 提示，要求"要么工具调用推进，要么严格 `REMAINING: DONE`"
 
-7. 停机原因可观测（stopReason）
+7. 滞止收敛检测（stale remaining）
+- 当 remaining 连续 N 轮不推进且本轮无确认性进展（fill/type/press/navigate/自定义工具成功执行）时触发
+- ≥ 2 轮：注入 CRITICAL 提示，要求模型检查快照是否已满足目标，若满足则输出 REMAINING: DONE
+- ≥ 3 轮：直接终止，stopReason = `stale_remaining`
+- 典型场景：任务已通过快照可见完成，但模型不主动输出 REMAINING: DONE，转而反复尝试 click OK、page_info 等无实质推进动作
+
+8. 停机原因可观测（stopReason）
 - 每次停机时 `metrics.stopReason` 输出精确的停机原因枚举值
-- 枚举值：`converged`（任务收敛）/ `repeated_batch`（重复批次）/ `idle_loop`（空转）/ `no_protocol`（协议缺失）/ `protocol_fix_failed`（协议修复失败）/ `max_rounds`（达到上限）/ `dry_run`（干运行模式）
+- 枚举值：`converged`（任务收敛）/ `assertion_passed`（断言通过）/ `repeated_batch`（重复批次）/ `idle_loop`（空转）/ `stale_remaining`（滞止收敛）/ `no_protocol`（协议缺失）/ `protocol_fix_failed`（协议修复失败）/ `max_rounds`（达到上限）/ `dry_run`（干运行模式）
 - 目标：消除停机原因靠猜测的问题，所有保护停机条件均可追溯
+
+9. 断言能力（Assertion）
+- 通过独立 AI 调用判断任务是否已完成，解决模型自行收敛不可靠的问题
+- 触发方式：执行 AI 主动调用 `assert({})` 工具（system prompt 告知模型具备断言能力）
+- `assert` 可与其他工具调用在同一轮共存：先执行其他工具，等待稳定后再触发断言
+- 评估流程：聚合已执行动作 → 读取最新快照 → 独立 AI 请求（无 tools、无 system prompt 继承）→ 返回 JSON 结果
+- `allPassed = true`：停机，`stopReason = "assertion_passed"`
+- `allPassed = false`：失败原因通过 `## Assertion Progress` 区块注入下一轮上下文，继续循环
+- 配置入口：`ChatOptions.assertionConfig.taskAssertions[]`（每条含 `task` + `description`）
+- 关键实现：`src/core/agent-loop/assertion/`（types.ts / prompt.ts / index.ts）
 ## 7. 变更策略（高优先级）
 
 ### 允许做的

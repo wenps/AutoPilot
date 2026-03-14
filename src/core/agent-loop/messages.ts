@@ -49,6 +49,7 @@ import type { AIMessage } from "../types.js";
 import { toContentString, hasToolError } from "./helpers.js";
 import { wrapSnapshot, SNAPSHOT_REGEX } from "./snapshot/index.js";
 import type { ToolTraceEntry } from "./types.js";
+import type { AssertionResult } from "./assertion/types.js";
 
 /**
  * 显式 UI 意图判定。
@@ -201,6 +202,8 @@ export function buildCompactMessages(
   previousRoundPlannedTasks?: string[],
   protocolViolationHint?: string,
   snapshotDiff?: string,
+  taskChecklist?: string,
+  lastAssertionResult?: AssertionResult,
 ): AIMessage[] {
   const messages: AIMessage[] = history ? [...history] : [];
   const allowAgentUiInteraction = isExplicitAgentUiRequest(userMessage);
@@ -220,6 +223,9 @@ export function buildCompactMessages(
       "",
       `Remaining: ${activeInstruction}`,
     ];
+    if (taskChecklist) {
+      parts.push("", "## Task Progress", taskChecklist, "Focus on the current task (marked ← current). When it is visibly done in snapshot, update REMAINING to drop it.");
+    }
     if (currentUrl) {
       parts.push(`URL: ${currentUrl}`);
     }
@@ -227,6 +233,7 @@ export function buildCompactMessages(
       parts.push(
         "",
         "Use #hashID from snapshot. Do NOT call page_info (snapshot is auto-refreshed). Batch fills freely; at most ONE click (last) per round.",
+        "Completion = VISIBLE OUTCOME in snapshot, not finishing every sub-step. If snapshot already shows the goal state (color is red, switch is off, value filled, etc.), output REMAINING: DONE — do NOT retry, verify, or click OK/confirm.",
         "Semantic completion: keep all unresolved user constraints in Remaining until they are visibly satisfied in the snapshot.",
         "Do NOT compress Remaining into a vague shell action that drops required entities, values, counts, filters, destinations, selections, or final outcomes from the user goal.",
         "Before any advance/finalize action, verify the prerequisite constraints are already satisfied in snapshot; otherwise continue the unsatisfied parts first.",
@@ -277,9 +284,18 @@ export function buildCompactMessages(
     "",
     // 当前剩余任务（唯一待消费目标）
     `Remaining: ${activeInstruction}`,
+  ];
+
+  // 结构化任务进度（多步任务时注入）
+  if (taskChecklist) {
+    contextParts.push("", "## Task Progress", taskChecklist, "Focus on the current task (marked ← current). When it is visibly done in snapshot, update REMAINING to drop it.");
+  }
+
+  contextParts.push(
     "",
-    // ── 关键行为强化（system prompt 已有完整规则，此处补强模型易违反的关键条） ──
+    // ── 关键行为强化 ──
     "Batch fills per round; clicks end the round — at most ONE click (last). Do NOT call page_info (snapshot is auto-refreshed).",
+    "Completion = VISIBLE OUTCOME in snapshot, not finishing every sub-step. If snapshot already shows the goal state (color is red, switch is off, value filled, etc.), output REMAINING: DONE — do NOT retry, verify, or click OK/confirm.",
     "Semantic completion: preserve all unresolved user constraints in Remaining until they are visibly satisfied in the snapshot.",
     "Do NOT narrow Remaining into only a shell action if that would drop required entities, values, counts, filters, destinations, selections, or final outcomes.",
     "Before any advance/finalize action, check that all prerequisite constraints are already visible in the snapshot.",
@@ -291,7 +307,7 @@ export function buildCompactMessages(
       ? "User explicitly asked to operate AutoPilot UI."
       : "Do NOT interact with AI chat UI elements.",
     "Output: REMAINING: <new remaining> or REMAINING: DONE",
-  ];
+  );
 
   if (hasErrors) {
     contextParts.push("", "Last step failed. Retry differently or skip to other targets.");
@@ -337,6 +353,22 @@ export function buildCompactMessages(
 
   if (currentUrl) {
     contextParts.push("", `URL: ${currentUrl}`);
+  }
+
+  // 断言进度注入：让 AI 清晰看到哪些断言已通过、哪些仍需努力
+  if (lastAssertionResult && !lastAssertionResult.allPassed) {
+    const progressLines: string[] = [
+      `## Assertion Progress (${lastAssertionResult.passed}/${lastAssertionResult.total} passed)`,
+    ];
+    for (const d of lastAssertionResult.details) {
+      progressLines.push(d.passed ? `✓ "${d.task}": ${d.reason}` : `✗ "${d.task}": ${d.reason}`);
+    }
+    progressLines.push(
+      "",
+      "Focus on the FAILED assertions above. Do NOT repeat actions for passed assertions.",
+      "Call `assert({})` again when you believe the failed assertions should now pass.",
+    );
+    contextParts.push("", ...progressLines);
   }
 
   if (protocolViolationHint) {

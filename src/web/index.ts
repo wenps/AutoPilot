@@ -32,12 +32,15 @@ import {
   type AgentLoopCallbacks,
   type AgentLoopResult,
   type RoundStabilityWaitOptions,
+  type AssertionConfig,
+  type AssertionResult,
 } from "../core/agent-loop/index.js";
 import type { AIMessage } from "../core/types.js";
 import { createAIClient } from "../core/ai-client/index.js";
 import type { AIClient } from "../core/types.js";
 import { ToolRegistry, type ToolDefinition, type ToolCallResult } from "../core/tool-registry.js";
 import { buildSystemPrompt } from "../core/system-prompt.js";
+import { Type } from "@sinclair/typebox";
 import { generateSnapshot, type SnapshotOptions } from "../core/agent-loop/snapshot/index.js";
 import { createDomTool, setActiveRefStore } from "./tools/dom-tool.js";
 import { createNavigateTool } from "./tools/navigate-tool.js";
@@ -113,13 +116,43 @@ export type WebAgentOptions = {
   panel?: boolean | PanelOptions;
 };
 
+// ─── Chat 选项 ───
+
+/**
+ * chat() 方法的可选配置。
+ *
+ * 支持配置断言，用于 AI 驱动的任务完成验证。
+ */
+export type ChatOptions = {
+  /**
+   * 断言配置。
+   *
+   * 配置后，AI 可在合适时机调用 assert 工具触发断言验证。
+   * 由独立的断言 AI（专用 prompt，不带 tools）根据快照 + 操作记录判定任务完成情况。
+   * 所有任务断言通过时立即收敛（stopReason = 'assertion_passed'）。
+   *
+   * @example
+   * ```ts
+   * await agent.chat("满意度选五星，然后填写用户名为 admin", {
+   *   assertionConfig: {
+   *     taskAssertions: [
+   *       { task: "满意度选五星", description: "满意度评分组件应显示 5 个激活状态的星星" },
+   *       { task: "填写用户名", description: "用户名输入框的值应为 admin" },
+   *     ]
+   *   }
+   * });
+   * ```
+   */
+  assertionConfig?: AssertionConfig;
+};
+
 // ─── WebAgent 类 ───
 
 export class WebAgent {
   /** 默认系统提示词 key（兼容旧版 setSystemPrompt(prompt)）。 */
   private static readonly DEFAULT_SYSTEM_PROMPT_KEY = "default";
   /** 默认内置工具名（注册后受保护，不允许删除）。 */
-  private static readonly DEFAULT_TOOL_NAMES = ["dom", "navigate", "page_info", "wait", "evaluate"] as const;
+  private static readonly DEFAULT_TOOL_NAMES = ["dom", "navigate", "page_info", "wait", "evaluate", "assert"] as const;
 
   /** 用户传入的自定义 AI 客户端实例（优先级高于 token/provider） */
   private client?: AIClient;
@@ -194,6 +227,16 @@ export class WebAgent {
     this.registry.register(createPageInfoTool());
     this.registry.register(createWaitTool());
     this.registry.register(createEvaluateTool());
+    // assert 是内置工具——AI 认为任务完成时主动调用，
+    // 实际逻辑在 agent-loop 层拦截处理（独立 AI 判定）。
+    this.registry.register({
+      name: "assert",
+      description: "Trigger task completion verification. Call when you believe the task is complete. The framework will use an independent AI to verify completion based on current snapshot and executed actions.",
+      schema: Type.Object({}),
+      execute: async () => ({
+        content: "Assertion handled by framework.",
+      }),
+    });
 
     for (const name of WebAgent.DEFAULT_TOOL_NAMES) {
       this.protectedToolNames.add(name);
@@ -466,17 +509,24 @@ export class WebAgent {
    *
    * 内部流程（全部复用 core）：
    * 1. createAIClient() → 创建 fetch AI 客户端
-   * 2. buildSystemPrompt() → 构建系统提示词
+   * 2. buildSystemPrompt() → 构建系统提示词（含断言能力说明）
    * 3. executeAgentLoop() → 执行决策循环
    * 4. callbacks → 实时通知 UI
+   *
+   * @param message - 用户任务消息
+   * @param options - 可选配置（断言配置等）
    */
-  async chat(message: string): Promise<AgentLoopResult> {
+  async chat(message: string, options?: ChatOptions): Promise<AgentLoopResult> {
     // 优先使用自定义 client，否则使用内置 createAIClient
     const client = this.client ?? this.createBuiltinClient();
+
+    const assertionConfig = options?.assertionConfig;
 
     // 先构建基础系统提示词，再追加已注册的 system prompt 扩展。
     let systemPrompt = buildSystemPrompt({
       listenerEvents: this.snapshotOptions.listenerEvents,
+      // 传入用户自定义断言任务（可选），system prompt 始终包含断言能力说明
+      assertionTasks: assertionConfig?.taskAssertions,
     });
     if (this.systemPromptRegistry.size > 0) {
       const extensionText = Array.from(this.systemPromptRegistry.entries())
@@ -508,9 +558,26 @@ export class WebAgent {
       // 快照失败不阻塞正常流程
     }
 
-    // 包装回调：在恢复快照前重置 RefStore，确保新快照的 hash ID 有效
+    // 包装回调
     const wrappedCallbacks: WebAgentCallbacks = {
       ...this.callbacks,
+      // 断言前清除 hover/focus 等瞬态视觉状态，确保快照反映持久状态
+      onBeforeAssertionSnapshot: () => {
+        try {
+          // 对所有正处于 hover 态的元素派发 mouseleave/pointerleave，
+          // 覆盖 Element Plus Rate 等依赖 mouseleave 清除 hover 的组件
+          const hovered = document.querySelectorAll(":hover");
+          for (const el of hovered) {
+            el.dispatchEvent(new PointerEvent("pointerleave", { bubbles: false }));
+            el.dispatchEvent(new MouseEvent("mouseleave", { bubbles: false }));
+          }
+          // 将焦点移到 body，清除 focus 高亮
+          if (document.activeElement && document.activeElement !== document.body) {
+            (document.activeElement as HTMLElement).blur?.();
+          }
+        } catch { /* 忽略：不阻塞断言流程 */ }
+      },
+      // 恢复快照前重置 RefStore，确保新快照的 hash ID 有效
       onBeforeRecoverySnapshot: (newUrl?: string) => {
         // URL 变化 → 清空映射 + 更新 URL 命名空间
         // 元素定位失败 → 仅清空可能失效的映射（URL 不变）
@@ -535,6 +602,7 @@ export class WebAgent {
       dryRun: this.dryRun,
       maxRounds: this.maxRounds,
       roundStabilityWait: this.roundStabilityWait,
+      assertionConfig,
       callbacks: wrappedCallbacks,
     });
 
@@ -592,3 +660,10 @@ export {
   type ToolExecutorMap,
 } from "../core/messaging.js";
 export { default as Panel, type PanelOptions } from "./ui/index.js";
+export {
+  evaluateAssertions,
+  type TaskAssertion,
+  type AssertionConfig,
+  type AssertionResult,
+  type TaskAssertionResult,
+} from "../core/agent-loop/index.js";
