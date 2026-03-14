@@ -237,7 +237,8 @@ Round 3: 执行 C → REMAINING: DONE
 | 无效点击拦截与循环检测 | 快照未变时记录无效 click；近 4 轮在 ≤2 个目标间循环 | 拦截重复无效点击；循环检测后将所有循环目标加入拦截集 |
 | 附近可点击元素推荐 | 点击被拦截或证实无效 | 从快照中查找目标附近 15 行内有点击信号的元素，按距离推荐 |
 | 原始目标锚定 | Round 1+ 每轮 | 注入用户原始任务作为对照组，防止多步执行中偏航 |
-| 停机原因可观测 | 每次停机时 | `metrics.stopReason` 输出枚举值（`converged` / `repeated_batch` / `idle_loop` / `no_protocol` / `max_rounds` 等） |
+| 断言验证（Assertion） | AI 主动调用 `assert({})` 工具 | 独立 AI 判定任务完成；全通过则停机，未通过注入进度继续循环 |
+| 停机原因可观测 | 每次停机时 | `metrics.stopReason` 输出枚举值（`converged` / `assertion_passed` / `repeated_batch` / `idle_loop` / `no_protocol` / `max_rounds` 等） |
 
 ### 5. 停机条件与 stopReason
 
@@ -246,12 +247,47 @@ Round 3: 执行 C → REMAINING: DONE
 | stopReason | 停机场景 |
 | --- | --- |
 | `converged` | 模型返回 `REMAINING: DONE` 或 remaining 收敛为空 |
+| `assertion_passed` | AI 调用 `assert` 工具且所有任务断言均通过 |
 | `repeated_batch` | 连续相同工具调用批次 ≥ 3 轮（防自转） |
 | `idle_loop` | 连续只读轮次触发空转检测 |
 | `no_protocol` | 连续多轮有工具调用但无 REMAINING 协议且无有效推进 |
 | `protocol_fix_failed` | 协议修复轮失败（无工具调用 + remaining 未收敛） |
 | `max_rounds` | 达到 maxRounds 上限 |
 | `dry_run` | dry-run 模式，仅展示不执行 |
+
+### 6. 断言能力（Assertion）
+
+`assert` 是内置工具，AI 认为任务完成时主动调用 `assert({})` 触发验证：
+
+```
+AI 执行动作 → 认为完成 → 调用 assert({})
+    ↓
+框架：等待页面稳定 → 清除 hover → 刷新快照
+    ↓
+独立断言 AI（专用 Prompt，无 tools）判定任务是否完成
+    ↓
+全部通过 → stopReason: "assertion_passed"
+部分失败 → 注入 Assertion Progress → 继续循环
+```
+
+**默认行为**：无自定义断言时，以用户原始消息作为整体断言依据。
+
+**自定义断言**：
+
+```ts
+const result = await agent.chat("关闭开关，满意度五星，标签选灰度", {
+  assertionConfig: {
+    taskAssertions: [
+      { task: "关闭开关", description: "开关组件不应有 is-checked class" },
+      { task: "满意度五星", description: "满意度 slider 的 5 个 star 均应有 is-active class" },
+      { task: "标签选灰度", description: "灰度 checkbox 应有 checked 状态" },
+    ],
+  },
+});
+
+console.log(result.assertionResult);
+// { allPassed: true, total: 3, passed: 3, failed: 0, details: [...] }
+```
 
 ---
 
@@ -329,7 +365,7 @@ Round 3: 执行 C → REMAINING: DONE
 
 ## 内置工具
 
-5 个内置工具通过 `agent.registerTools()` 一次注册。
+6 个内置工具通过 `agent.registerTools()` 一次注册。
 
 ### dom — DOM 交互
 
@@ -384,6 +420,16 @@ Round 3: 执行 C → REMAINING: DONE
 
 执行页面上下文 JavaScript 表达式或语句块。兜底工具，适用于其他工具无法覆盖的场景。
 
+### assert — 任务断言
+
+AI 认为任务完成时主动调用 `assert({})`，框架发起独立 AI 判定（专用 Prompt、无 tools、不继承 system prompt），基于当前快照 + 已执行操作验证任务是否真正完成。
+
+- **默认行为**：无自定义断言时，以用户原始消息作为整体断言依据
+- **自定义断言**：通过 `ChatOptions.assertionConfig.taskAssertions` 传入细粒度子任务断言
+- **断言全通过**：`stopReason = "assertion_passed"`，循环终止
+- **部分失败**：失败原因注入下一轮 `## Assertion Progress` 区块，AI 聚焦修复后再次触发断言
+- **hover 清除**：断言前自动派发 `pointerleave`/`mouseleave` 清除瞬态视觉状态，确保快照反映持久状态
+
 ---
 
 ## 自定义 Prompt
@@ -434,7 +480,7 @@ agent.registerTool({
 
 工具管理：`registerTool()` / `removeTool()` / `hasTool()` / `getToolNames()` / `clearCustomTools()` / `getTools()`
 
-内置工具（`dom/navigate/page_info/wait/evaluate`）受保护，不允许删除。
+内置工具（`dom/navigate/page_info/wait/evaluate/assert`）受保护，不允许删除。
 
 ---
 
@@ -491,7 +537,7 @@ agent.callbacks = {
 | `redundantInterceptCount` | 冗余拦截次数 |
 | `snapshotReadCount` / `latestSnapshotSize` / `avgSnapshotSize` / `maxSnapshotSize` | 快照统计 |
 | `inputTokens` / `outputTokens` | Token 消耗 |
-| `stopReason` | 停机原因枚举（`converged` / `repeated_batch` / `idle_loop` / `no_protocol` / `protocol_fix_failed` / `max_rounds` / `dry_run`） |
+| `stopReason` | 停机原因枚举（`converged` / `assertion_passed` / `repeated_batch` / `idle_loop` / `no_protocol` / `protocol_fix_failed` / `max_rounds` / `dry_run`） |
 
 ### AgentLoopResult
 
@@ -501,6 +547,7 @@ agent.callbacks = {
 | `toolCalls` | `Array<{ name, input, result }>` | 完整工具调用轨迹 |
 | `messages` | `AIMessage[]` | 完整对话消息（可用于 memory） |
 | `metrics` | `AgentLoopMetrics` | 运行指标 |
+| `assertionResult` | `AssertionResult` | 断言结果（仅在 AI 触发 assert 时存在） |
 
 ---
 
@@ -551,6 +598,10 @@ src/
 │   │   ├── recovery.ts            # 兼容转发层（-> recovery/index）
 │   │   ├── recovery/              # 恢复与拦截子模块
 │   │   │   └── index.ts
+│   │   ├── assertion/             # 断言子模块
+│   │   │   ├── types.ts           # 断言类型定义
+│   │   │   ├── prompt.ts          # 断言专用 Prompt
+│   │   │   └── index.ts           # 断言引擎
 │   │   ├── helpers.ts             # 纯函数工具
 │   │   ├── constants.ts           # 默认常量
 │   │   ├── types.ts               # 循环类型

@@ -4,6 +4,24 @@
 
 ### 新功能
 
+- **断言能力（Assertion）**：
+  - 新增内置 `assert` 工具 — AI 认为任务完成时主动调用 `assert({})`，触发独立 AI 判定任务是否真正完成
+  - 断言 AI 使用专用 Prompt（不继承 system prompt、不带 tools），基于当前快照 + 已执行操作判定每条任务断言
+  - 新增 `assertion/` 子模块（`types.ts` / `prompt.ts` / `index.ts`）：类型定义、断言专用 Prompt 构建、断言评估引擎
+  - 新增 `StopReason: "assertion_passed"` — 所有断言通过时立即收敛停机
+  - 支持自定义断言：`ChatOptions.assertionConfig.taskAssertions` 传入细粒度子任务断言
+  - 默认断言：无自定义配置时以用户原始消息作为整体断言依据
+  - `assert` 可与其他工具调用在同一轮共存 — 先执行其他工具，等待稳定后再发起断言
+
+- **断言进度注入（Assertion Progress）**：
+  - 断言部分失败时，Round 1+ 消息中注入 `## Assertion Progress (x/y passed)` 区块
+  - 每条断言标 `✓`/`✗` 附带 AI 判定理由，引导执行 AI 聚焦失败项
+
+- **断言前 hover 清除**：
+  - 新增 `onBeforeAssertionSnapshot` 回调，断言快照刷新前自动清除 hover/focus 瞬态视觉状态
+  - 对所有 `:hover` 元素派发 `pointerleave`/`mouseleave`，对 `activeElement` 调 `blur()`
+  - 解决 Element Plus Rate 等组件点击后 hover 遮盖 `is-active` 导致断言误判的问题
+
 - **快照变化摘要（Snapshot Diff）**：
   - 新增 `computeSnapshotDiff()`，hashID 归一化后逐行对比前后快照，输出 `- removed` / `+ added` 格式变化摘要（最多 20 行）
   - Round 1+ 快照前注入 `## Snapshot Changes (since last round)` 区块，让 AI 直接看到"什么变了"
@@ -27,6 +45,9 @@
 - **retarget 自身点击信号守卫**：
   - 元素自身有 click/pointerdown/mousedown 追踪事件时，跳过祖先 button/link 回溯
   - 修复 el-color-picker 等内层 div 有独立 @click handler 却被回溯到外层 button 的问题
+- **system prompt 始终包含断言能力说明**：`## Assertion Capability` 章节不再依赖外部配置，始终注入
+- **`assert` 注册为内置工具**：与 `dom`/`navigate`/`wait`/`evaluate` 同级，在 `registerTools()` 时注册，`DEFAULT_TOOL_NAMES` 新增 `"assert"`
+- **`AgentLoopResult` 新增 `assertionResult` 字段**：返回断言评估详细结果（`allPassed`/`total`/`passed`/`failed`/`details`）
 
 ### 修复
 
@@ -72,6 +93,9 @@
 - 同步更新 `LOOP_MECHANISM.md`、`AGENTS.md`、`README.md`
 - recovery 模块注释移除已废弃的冗余拦截/快照防抖描述
 - 同步更新 `system-prompt.ts`：明确 `page_info.snapshot` 为 INTERNAL framework action（禁止模型主动调用）
+- AGENTS.md：新增断言目录结构、模块职责、stopReason 枚举、§9 断言能力说明
+- LOOP_MECHANISM.md：新增 §5.8 断言能力、断言进度注入、assertion/ 模块描述
+- README.md：新增 §6 断言能力章节、assert 工具说明、assertionResult 字段、目录结构更新
 
 ### Demo
 
