@@ -134,5 +134,8 @@ export type {
 } from "./micro-task/index.js";
 export { createExecutionRecordChain, TaskMonitor } from "./micro-task/index.js";
 
+// ─── Engine（决策循环）───
+export { executeAgentLoop } from "./engine/index.js";
+
 // ─── AI 客户端 ───
 export { createAIClient } from "./shared/ai-client/index.js";
