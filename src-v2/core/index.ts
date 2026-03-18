@@ -125,5 +125,14 @@ export type {
   MicroTaskExecutionRecord,
 } from "./assertion/types.js";
 
+// ─── 微任务 ───
+export type {
+  MicroTaskDescriptor,
+  MicroTaskResult,
+  ExecutionRecordChain,
+  MicroTaskExecuteFn,
+} from "./micro-task/index.js";
+export { createExecutionRecordChain, TaskMonitor } from "./micro-task/index.js";
+
 // ─── AI 客户端 ───
 export { createAIClient } from "./shared/ai-client/index.js";
