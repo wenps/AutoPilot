@@ -108,6 +108,13 @@ export type WebAgentOptions = {
 export type ChatOptions = {
   /** 断言配置 */
   assertionConfig?: AssertionConfig;
+  /**
+   * 是否启用编排模式（可选，默认 false）。
+   *
+   * 启用后 AI 可在主循环中自主决定是否通过 dispatch_micro_task
+   * 将复杂任务拆解为微任务执行。
+   */
+  enableOrchestration?: boolean;
 };
 
 // ─── WebAgent 类 ───
@@ -323,7 +330,7 @@ export class WebAgent {
       panel.setStatus("running");
       panel.showTyping();
       try {
-        const result = await this.chat(text);
+        const result = await this.chat(text, { enableOrchestration: true });
         panel.removeTyping();
         if (result.reply) panel.addMessage("assistant", result.reply);
         panel.setStatus("idle");
@@ -390,6 +397,7 @@ export class WebAgent {
         assertionConfig: options?.assertionConfig,
         initialSnapshot,
         callbacks: wrappedCallbacks,
+        enableOrchestration: options?.enableOrchestration,
       });
 
       if (!this.memory) mainAgent.clearHistory();
@@ -548,11 +556,7 @@ export {
 } from "../core/shared/messaging.js";
 export { default as Panel, type PanelOptions } from "./ui/index.js";
 export {
-  evaluateAssertions,
-  type TaskAssertion,
-  type AssertionConfig,
-  type AssertionResult,
-  type TaskAssertionResult,
+  evaluateAssertions
 } from "../core/assertion/index.js";
 export { MainAgent } from "../core/main-agent/index.js";
 export type { MicroTaskDescriptor, MicroTaskResult } from "../core/micro-task/types.js";

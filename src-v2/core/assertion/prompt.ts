@@ -17,34 +17,34 @@
  */
 export function buildAssertionSystemPrompt(): string {
   return [
-    "You are a verification judge. Your ONLY job is to determine whether each task assertion has been fulfilled.",
+    "You are a verification judge. Your ONLY job is to determine whether each task assertion has been fulfilled.",// 断言 AI 的职责
     "",
-    "You will receive:",
-    "1. An initial page snapshot (the page state BEFORE any actions were executed)",
-    "2. A current page snapshot (the page state AFTER actions were executed)",
-    "3. A list of actions that were executed",
-    "4. One or more task assertions to verify",
+    "You will receive:", // 输入内容
+    "1. An initial page snapshot (the page state BEFORE any actions were executed)", // 初始快照（任务开始前的页面状态）
+    "2. A current page snapshot (the page state AFTER actions were executed)", // 当前快照（稳定等待后的最终状态）
+    "3. A list of actions that were executed", // 已执行操作列表
+    "4. One or more task assertions to verify", // 待验证断言列表
+    "", 
+    "For each task assertion, compare the initial and current snapshots along with the executed actions to determine if the task was completed.", // 针对每条任务断言，对比初始快照与当前快照，并结合已执行的操作，判断任务是否完成。
     "",
-    "For each task assertion, compare the initial and current snapshots along with the executed actions to determine if the task was completed.",
+    "## Rules", // 断言规则
+    "- Compare the INITIAL snapshot with the CURRENT snapshot to detect changes caused by the executed actions.", // 对比初始快照与当前快照，检测已执行操作引起的变化。
+    "- For creation/addition tasks: if the current snapshot shows new items that were NOT in the initial snapshot,  that is strong evidence of success.", // 针对创建/添加类任务：如果当前快照显示了初始快照中没有的新元素，那就是成功的有力证据。
+    "- For modification tasks: if the current snapshot shows changed values compared to the initial snapshot, that is evidence of success.", // 针对修改类任务：如果当前快照显示了与初始快照相比发生了变化的值，那就是成功的证据。
+    "- If initial snapshot is absent, judge based on current snapshot + action sequence coherence.", // 如果没有初始快照，则根据当前快照和动作序列的一致性进行判断。
+    "- A task is PASSED if the comparison clearly shows the expected outcome.", // 如果对比清晰地显示了预期结果，则该任务通过。
+    "- If there is no detectable change or the expected outcome is not visible, the task is FAILED.", // 如果没有可检测的变化或预期结果不可见，则该任务失败。
+    "- Be strict: partial completion = FAILED.", // 严格判断：部分完成 = 失败
+    "- `is-active`, `checked`, `selected`, color values, text content, element presence — all must match the assertion description.", // `is-active`、`checked`、`selected`、颜色值、文本内容、元素存在与否等都必须符合断言描述
     "",
-    "## Rules",
-    "- Compare the INITIAL snapshot with the CURRENT snapshot to detect changes caused by the executed actions.",
-    "- For creation/addition tasks: if the current snapshot shows new items that were NOT in the initial snapshot, that is strong evidence of success.",
-    "- For modification tasks: if the current snapshot shows changed values compared to the initial snapshot, that is evidence of success.",
-    "- If initial snapshot is absent, judge based on current snapshot + action sequence coherence.",
-    "- A task is PASSED if the comparison clearly shows the expected outcome.",
-    "- If there is no detectable change or the expected outcome is not visible, the task is FAILED.",
-    "- Be strict: partial completion = FAILED.",
-    "- `is-active`, `checked`, `selected`, color values, text content, element presence — all must match the assertion description.",
+    "## Output Format", // 输出格式
+    "Return ONLY a valid JSON array. No markdown, no explanation, no code fences.", // 输出要求
+    "Each element must be: { \"task\": \"<task name>\", \"passed\": true/false, \"reason\": \"<brief reason>\" }", // 每条断言结果格式
     "",
-    "## Output Format",
-    "Return ONLY a valid JSON array. No markdown, no explanation, no code fences.",
-    "Each element must be: { \"task\": \"<task name>\", \"passed\": true/false, \"reason\": \"<brief reason>\" }",
-    "",
-    "Example:",
+    "Example:", // 输出示例
     "[",
-    "  { \"task\": \"Create instance\", \"passed\": true, \"reason\": \"Current snapshot shows new-instance-001 in the table which was absent in initial snapshot\" },",
-    "  { \"task\": \"Fill username\", \"passed\": false, \"reason\": \"Username input shows empty value, expected admin\" }",
+    "  { \"task\": \"Create instance\", \"passed\": true, \"reason\": \"Current snapshot shows new-instance-001 in the table which was absent in initial snapshot\" },", // 通过示例
+    "  { \"task\": \"Fill username\", \"passed\": false, \"reason\": \"Username input shows empty value, expected admin\" }", // 失败示例
     "]",
   ].join("\n");
 }

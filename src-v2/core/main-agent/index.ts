@@ -127,6 +127,8 @@ import { buildSystemPrompt } from "../shared/system-prompt.js";
 import { executeAgentLoop } from "../engine/index.js";
 import { executeMicroTask } from "./dispatch.js";
 import { TaskMonitor } from "../micro-task/task-monitor.js";
+import { OrchestrationContext } from "./orchestration-context.js";
+import { Type } from "@sinclair/typebox";
 
 // ─── 类型定义 ───
 
@@ -200,6 +202,14 @@ export interface ChatOptions {
   initialSnapshot?: string;
   /** 覆盖实例级回调（仅本次 chat 生效）。 */
   callbacks?: AgentLoopCallbacks;
+  /**
+   * 是否启用编排模式（可选，默认 false）。
+   *
+   * 启用后 AI 可在主循环中通过 dispatch_micro_task 工具自主决定
+   * 是否将复杂任务拆解为微任务执行。dispatch_micro_task 仅在本次
+   * chat 期间注册，chat 结束后自动清理。
+   */
+  enableOrchestration?: boolean;
 }
 
 /** chatWithOrchestration() 的可选参数。 */
@@ -337,33 +347,76 @@ export class MainAgent {
       description: a.description,
     }));
 
+    // 合并回调：chat 级 > 实例级
+    const callbacks = options?.callbacks ?? this.callbacks;
+
+    // === 编排模式处理 ===
+    let orchestrationCtx: OrchestrationContext | undefined;
+
+    if (options?.enableOrchestration) {
+      orchestrationCtx = new OrchestrationContext({
+        aiClient: this.aiClient,
+        tools: this.tools,
+        roundStabilityWait: this.roundStabilityWait,
+        callbacks,
+        initialSnapshot: options?.initialSnapshot,
+      });
+
+      this.tools.register({
+        name: "dispatch_micro_task",
+        description:
+          "Delegate a focused sub-task to a micro-task agent. " +
+          "The micro-task agent executes independently with its own Agent Loop, " +
+          "using a simplified prompt focused on the given task. " +
+          "Use this for complex forms (>5 fields), multi-step workflows, or repetitive operations.",
+        schema: Type.Object({
+          task: Type.String({ description: "Clear, specific task description for the micro-task agent" }),
+        }),
+        execute: (params) => orchestrationCtx!.dispatch(params as { task: string }),
+      });
+    }
+
     // 构建系统提示词
     const systemPrompt = buildSystemPrompt({
       extraInstructions: this.extraInstructions,
       assertionTasks,
+      enableOrchestration: options?.enableOrchestration,
     });
 
-    // 合并回调：chat 级 > 实例级
-    const callbacks = options?.callbacks ?? this.callbacks;
+    try {
+      // 执行 Agent Loop
+      const result = await executeAgentLoop({
+        client: this.aiClient,
+        registry: this.tools,
+        systemPrompt,
+        message,
+        initialSnapshot: options?.initialSnapshot,
+        history: this.history.length > 0 ? this.history : undefined,
+        maxRounds: this.maxRounds,
+        roundStabilityWait: this.roundStabilityWait,
+        assertionConfig,
+        callbacks,
+      });
 
-    // 执行 Agent Loop
-    const result = await executeAgentLoop({
-      client: this.aiClient,
-      registry: this.tools,
-      systemPrompt,
-      message,
-      initialSnapshot: options?.initialSnapshot,
-      history: this.history.length > 0 ? this.history : undefined,
-      maxRounds: this.maxRounds,
-      roundStabilityWait: this.roundStabilityWait,
-      assertionConfig,
-      callbacks,
-    });
+      // 累积对话历史（engine 返回的 messages 包含历史 + 本轮）
+      this.history = result.messages;
 
-    // 累积对话历史（engine 返回的 messages 包含历史 + 本轮）
-    this.history = result.messages;
+      // === finalize 编排上下文 ===
+      if (orchestrationCtx) {
+        const { results, allPassed } = await orchestrationCtx.finalize();
+        return {
+          ...result,
+          microTaskResults: results,
+        };
+      }
 
-    return result;
+      return result;
+    } finally {
+      // === 清理 dispatch tool ===
+      if (orchestrationCtx) {
+        this.tools.unregister("dispatch_micro_task");
+      }
+    }
   }
 
   /**

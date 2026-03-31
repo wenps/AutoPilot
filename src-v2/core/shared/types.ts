@@ -209,6 +209,8 @@ export type AgentLoopResult = {
    * 若 stopReason = 'assertion_passed'，则 assertionResult.allPassed = true。
    */
   assertionResult?: AssertionResult;
+  /** 执行结束时的最新页面快照（供微任务传递给下一个微任务或断言使用） */
+  finalSnapshot?: string;
 };
 
 // ─── 内部状态类型 ───

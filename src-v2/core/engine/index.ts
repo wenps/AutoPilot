@@ -127,6 +127,7 @@ import {
   extractHashSelectorRef,
   getToolAction,
   normalizeModelOutput,
+  stripThinking,
   parseSnapshotExpandHints,
   reduceRemainingHeuristically,
   shouldForceRoundBreak,
@@ -570,7 +571,7 @@ export async function executeAgentLoop(
         continue;
       }
 
-      finalReply = response.text ?? "";
+      finalReply = stripThinking(response.text);
       if (finalReply) callbacks?.onText?.(finalReply);
       stopReason = remainingInstruction.trim().length > 0 ? "protocol_fix_failed" : "converged";
       break;
@@ -596,7 +597,7 @@ export async function executeAgentLoop(
     // ≥ 2 轮：注入提示，要求模型换策略或结束。
     // ≥ 3 轮：仍无变化，直接终止。
     if (consecutiveSamePlannedBatch >= 3 && !lastRoundHadError) {
-      finalReply = response.text?.trim() || "任务已完成。";
+      finalReply = stripThinking(response.text) || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
       stopReason = "repeated_batch";
       break;
@@ -616,7 +617,7 @@ export async function executeAgentLoop(
 
     // ─── Dry-run 模式 ───
     if (dryRun) {
-      finalReply = response.text ? response.text + "\n\n" : "";
+      finalReply = stripThinking(response.text) ? stripThinking(response.text) + "\n\n" : "";
       finalReply += "🔧 AI 请求调用以下工具（dry-run 模式，未执行）：\n";
       for (const tc of response.toolCalls) {
         callbacks?.onToolCall?.(tc.name, tc.input);
@@ -791,7 +792,7 @@ export async function executeAgentLoop(
 
       // 总断言通过：立即收敛
       if (assertionResult.allPassed) {
-        finalReply = response.text?.trim() || "任务已完成（断言验证全部通过）。";
+        finalReply = stripThinking(response.text) || "任务已完成（断言验证全部通过）。";
         if (finalReply) callbacks?.onText?.(finalReply);
         stopReason = "assertion_passed";
         break;
@@ -802,7 +803,7 @@ export async function executeAgentLoop(
         consecutiveAssertOnlyFailedRounds++;
         if (consecutiveAssertOnlyFailedRounds >= 2) {
           // 连续 2 轮只调 assert 且都失败：停机，避免无限循环
-          finalReply = response.text?.trim() || "断言连续失败，停止执行。";
+          finalReply = stripThinking(response.text) || "断言连续失败，停止执行。";
           if (finalReply) callbacks?.onText?.(finalReply);
           stopReason = "assertion_loop";
           break;
@@ -877,7 +878,7 @@ export async function executeAgentLoop(
       remainingInstruction.trim().length === 0 &&
       !roundHasError
     ) {
-      finalReply = response.text?.trim() || "任务已完成。";
+      finalReply = stripThinking(response.text) || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
       stopReason = "converged";
       break;
@@ -886,7 +887,7 @@ export async function executeAgentLoop(
     // 保护 6：空转检测（基于实际执行的工具，排除被框架拦截的冗余调用）
     const idleResult = detectIdleLoop(executedTaskCalls, consecutiveReadOnlyRounds);
     if (idleResult === -1) {
-      finalReply = response.text?.trim() || "任务已完成。";
+      finalReply = stripThinking(response.text) || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
       stopReason = "idle_loop";
       break;
@@ -905,7 +906,7 @@ export async function executeAgentLoop(
     previousRoundRemaining = remainingInstruction;
 
     if (consecutiveNoProgressRounds >= 3) {
-      finalReply = response.text?.trim() || "任务已完成。";
+      finalReply = stripThinking(response.text) || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
       stopReason = "stale_remaining";
       break;
@@ -1032,7 +1033,7 @@ export async function executeAgentLoop(
     // 移至快照指纹对比之后：若本轮 click 导致页面变化，已在上方重置计数器，不会误停。
     // 仅当连续多轮操作均无页面变化且无协议时，才触发停机。
     if (consecutiveNoProtocolRounds >= 5) {
-      finalReply = response.text?.trim() || "任务已完成。";
+      finalReply = stripThinking(response.text) || "任务已完成。";
       if (finalReply) callbacks?.onText?.(finalReply);
       stopReason = "no_protocol";
       break;
@@ -1091,6 +1092,7 @@ export async function executeAgentLoop(
     messages: resultMessages,
     metrics,
     ...(lastAssertionResult ? { assertionResult: lastAssertionResult } : {}),
+    finalSnapshot: pageContext.latestSnapshot,
   };
 }
 

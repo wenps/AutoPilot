@@ -152,25 +152,8 @@ export async function executeMicroTask(
     success,
     executionRecord,
     metrics: result.metrics,
-    finalSnapshot: extractFinalSnapshot(result),
+    finalSnapshot: result.finalSnapshot ?? "",
     failureReason,
   };
 }
 
-/**
- * 从 AgentLoopResult 中提取最终快照。
- *
- * 快照存在于 messages 的最后一条 user 消息中（engine 每轮注入）。
- * 若无法提取，返回空字符串。
- */
-function extractFinalSnapshot(result: { messages: Array<{ role: string; content: string | unknown }> }): string {
-  // 从后往前找最后一条包含快照标记的 user 消息
-  for (let i = result.messages.length - 1; i >= 0; i--) {
-    const msg = result.messages[i];
-    if (msg.role === "user" && typeof msg.content === "string") {
-      const match = msg.content.match(/--- PAGE SNAPSHOT ---\n([\s\S]*?)\n--- END SNAPSHOT ---/);
-      if (match) return match[1];
-    }
-  }
-  return "";
-}

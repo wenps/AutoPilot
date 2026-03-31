@@ -374,11 +374,51 @@ export function buildTaskArray(toolCalls: Array<{ name: string; input: unknown }
 }
 
 /**
+ * 过滤模型输出中的思考/推理部分，只保留面向用户的内容。
+ *
+ * 策略：
+ * 1. 如果包含 REMAINING 协议行，只保留最后一个 REMAINING 行及其后续摘要
+ * 2. 如果包含 **Summary** 或 “REMAINING: DONE” 后的摘要，保留摘要部分
+ * 3. 否则返回空字符串（纯思考内容不展示）
+ *
+ * @example
+ * ```ts
+ * stripThinking(“Looking at the snapshot...\n\nREMAINING: DONE\n\n**Summary:** All done.”)
+ * // → “REMAINING: DONE\n\n**Summary:** All done.”
+ *
+ * stripThinking(“Let me analyze...\nI need to click #x...”)
+ * // → ""
+ * ``` */
+export function stripThinking(text: string | undefined): string {
+  if (!text) return "";
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+
+  // 找最后一个 REMAINING: 行的位置
+  const lines = trimmed.split("\n");
+  let remainingLineIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/REMAINING\s*:/i.test(lines[i])) {
+      remainingLineIdx = i;
+      break;
+    }
+  }
+
+  // 有 REMAINING 协议：保留 REMAINING 行及之后的内容（通常含摘要）
+  if (remainingLineIdx >= 0) {
+    return lines.slice(remainingLineIdx).join("\n").trim();
+  }
+
+  // 无 REMAINING：返回空（纯思考内容）
+  return "";
+}
+
+/**
  * 规范化模型输出。
  *
  * 优先保留 REMAINING；否则保留首段摘要，避免长文本污染上下文。
  *
- * 返回字符串会被注入下一轮消息，作为“上一轮模型输出摘要”。 *
+ * 返回字符串会被注入下一轮消息，作为”上一轮模型输出摘要”。 *
  * @example
  * ```ts
  * normalizeModelOutput("操作完成\nREMAINING: 填写表单")
