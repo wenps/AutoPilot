@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [vue()],
 
   envDir: "..",
-  envPrefix: ["VITE_", "GITHUB_", "MINIMAX_"],
+  envPrefix: ["VITE_", "GITHUB_", "MINIMAX_", "GLM_"],
 
   server: {
     port: 3001,

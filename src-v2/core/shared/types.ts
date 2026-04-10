@@ -157,6 +157,10 @@ export type AgentLoopCallbacks = {
    * 确保断言 AI 看到的快照反映真实持久状态而非鼠标悬停态。
    */
   onBeforeAssertionSnapshot?: () => void | Promise<void>;
+  /** 快照刷新后触发（用于 interactive overlay 重新应用等后处理） */
+  onAfterSnapshot?: () => void;
+  /** AI 每次返回响应后触发（用于 debug 模式记录完整 AI 响应） */
+  onAIResponse?: (response: AIChatResponse) => void;
   /** 一次 chat 结束后输出结构化运行指标 */
   onMetrics?: (metrics: AgentLoopMetrics) => void;
 };
@@ -192,6 +196,10 @@ export type AgentLoopParams = {
   assertionConfig?: AssertionConfig;
   /** 事件回调 */
   callbacks?: AgentLoopCallbacks;
+  /** 启用聚焦快照模式（微任务场景） */
+  focusedMode?: boolean;
+  /** 初始聚焦目标 ref（可选，由编排层预设） */
+  initialFocusRef?: string;
 };
 
 export type AgentLoopResult = {

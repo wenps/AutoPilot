@@ -40,14 +40,16 @@ import type {
   MainAgentResult,
 } from "../core/main-agent/index.js";
 import type { AgentLoopCallbacks, AgentLoopResult, RoundStabilityWaitOptions } from "../core/shared/types.js";
-import type { AIClient } from "../core/shared/types.js";
+import type { AIClient, AIChatResponse } from "../core/shared/types.js";
 import type { AssertionConfig } from "../core/assertion/types.js";
 import type { MicroTaskDescriptor } from "../core/micro-task/types.js";
 import { ToolRegistry, type ToolDefinition, type ToolCallResult } from "../core/shared/tool-registry.js";
 import { createAIClient } from "../core/shared/ai-client/index.js";
-import { buildSystemPrompt } from "../core/shared/system-prompt.js";
 import { generateSnapshot, type SnapshotOptions } from "../core/shared/snapshot/index.js";
 import { createDomTool, setActiveRefStore } from "./tools/dom-tool.js";
+import { cleanupHoverStyles } from "./helpers/base/hover-force.js";
+import { applyInteractiveOverlay, clearInteractiveOverlay } from "./helpers/base/interactive-overlay.js";
+import { setInteractiveOverlayEnabled, getInteractiveOverlayEnabled } from "./helpers/base/interactive-overlay-store.js";
 import { createNavigateTool } from "./tools/navigate-tool.js";
 import { createPageInfoTool } from "./tools/page-info-tool.js";
 import { createWaitTool } from "./tools/wait-tool.js";
@@ -101,6 +103,10 @@ export type WebAgentOptions = {
   roundStabilityWait?: RoundStabilityWaitOptions;
   /** UI 面板配置 */
   panel?: boolean | PanelOptions;
+  /** 是否启用交互模式高亮（默认 false） */
+  interactiveOverlay?: boolean;
+  /** 是否启用调试模式（默认 false），开启后每次 AI 响应会存入 debugResponses 数组 */
+  debug?: boolean;
 };
 
 // ─── Chat 选项 ───
@@ -139,6 +145,8 @@ export class WebAgent {
   private autoSnapshot: boolean;
   private snapshotOptions: SnapshotOptions;
   private roundStabilityWait?: RoundStabilityWaitOptions;
+  private interactiveOverlay: boolean;
+  private debug: boolean;
 
   private registry = new ToolRegistry();
 
@@ -147,6 +155,9 @@ export class WebAgent {
 
   /** 事件回调 */
   callbacks: WebAgentCallbacks = {};
+
+  /** 调试模式下，每次 AI 响应的完整记录（debug: true 时自动收集） */
+  debugResponses: AIChatResponse[] = [];
 
   /** v2 MainAgent 实例（懒初始化，chat 时创建） */
   private _mainAgent?: MainAgent;
@@ -165,6 +176,8 @@ export class WebAgent {
     this.autoSnapshot = options.autoSnapshot ?? true;
     this.snapshotOptions = options.snapshotOptions ?? {};
     this.roundStabilityWait = options.roundStabilityWait;
+    this.interactiveOverlay = options.interactiveOverlay ?? false;
+    this.debug = options.debug ?? false;
 
     if (typeof options.systemPrompt === "string") {
       this.setSystemPrompt(options.systemPrompt);
@@ -369,6 +382,9 @@ export class WebAgent {
   async chat(message: string, options?: ChatOptions): Promise<AgentLoopResult> {
     const mainAgent = this.getMainAgent();
 
+    // 启用/禁用 interactive overlay
+    setInteractiveOverlayEnabled(this.interactiveOverlay);
+
     // 更新 extraInstructions
     this.syncExtraInstructions(mainAgent);
 
@@ -403,6 +419,8 @@ export class WebAgent {
       if (!this.memory) mainAgent.clearHistory();
       return result;
     } finally {
+      clearInteractiveOverlay();
+      setInteractiveOverlayEnabled(false);
       refStore.clear();
       setActiveRefStore(undefined);
     }
@@ -499,6 +517,7 @@ export class WebAgent {
       ...this.callbacks,
       onBeforeAssertionSnapshot: () => {
         try {
+          cleanupHoverStyles();
           const hovered = document.querySelectorAll(":hover");
           for (const el of hovered) {
             el.dispatchEvent(new PointerEvent("pointerleave", { bubbles: false }));
@@ -508,6 +527,16 @@ export class WebAgent {
             (document.activeElement as HTMLElement).blur?.();
           }
         } catch { /* 不阻塞断言流程 */ }
+      },
+      onAfterSnapshot: () => {
+        try {
+          if (getInteractiveOverlayEnabled()) applyInteractiveOverlay();
+        } catch { /* 不阻塞快照流程 */ }
+        this.callbacks.onAfterSnapshot?.();
+      },
+      onAIResponse: (response: AIChatResponse) => {
+        if (this.debug) this.debugResponses.push(response);
+        this.callbacks.onAIResponse?.(response);
       },
       onBeforeRecoverySnapshot: (newUrl?: string) => {
         if (newUrl !== undefined) {
@@ -560,3 +589,92 @@ export {
 } from "../core/assertion/index.js";
 export { MainAgent } from "../core/main-agent/index.js";
 export type { MicroTaskDescriptor, MicroTaskResult } from "../core/micro-task/types.js";
+
+// ─── 暴露调试工具到 window ───
+
+import { generateFocusedSnapshot } from "../core/shared/snapshot/index.js";
+import { computeSemanticDiff, computeSnapshotDiff } from "../core/shared/helpers.js";
+import { getActiveRefStore } from "./helpers/base/active-store.js";
+
+/**
+ * window.__autopilot — 暴露快照和 diff 函数供控制台调试。
+ *
+ * 用法：
+ *   __autopilot.snapshot()              — 全量快照
+ *   __autopilot.snapshot({ maxNodes: 100 }) — 带选项的全量快照
+ *   __autopilot.focused('#hashId')      — 聚焦快照（目标元素的关联链）
+ *   __autopilot.focused('#hashId', { ancestorLevels: 5 })
+ *   __autopilot.diff(base, current)     — 节点级语义 diff
+ *   __autopilot.lineDiff(prev, current) — 逐行文本 diff（旧版）
+ *   __autopilot.refStore()              — 当前 RefStore 实例
+ */
+/** 调试用临时 RefStore（无活跃会话时自动创建） */
+let _debugRefStore: InstanceType<typeof RefStore> | undefined;
+
+if (typeof globalThis !== "undefined") {
+  (globalThis as Record<string, unknown>).__autopilot = {
+    /** 生成全量快照（始终带 hash ID，无活跃会话时自动创建临时 RefStore） */
+    snapshot(options?: SnapshotOptions) {
+      let refStore = getActiveRefStore();
+      if (!refStore) {
+        // 无活跃 chat 会话 → 创建/复用临时 RefStore，确保快照始终有 hash ID
+        if (!_debugRefStore) {
+          _debugRefStore = new RefStore(globalThis.location?.href);
+        } else {
+          _debugRefStore.clear();
+        }
+        refStore = _debugRefStore;
+      }
+      return generateSnapshot(document.body, {
+        maxDepth: 12,
+        viewportOnly: false,
+        pruneLayout: true,
+        maxNodes: 500,
+        maxChildren: 30,
+        maxTextLength: 40,
+        ...options,
+        refStore,
+      });
+    },
+
+    /** 生成聚焦快照（传入 #hashId 或纯 hashId） */
+    focused(hashRef: string, options?: { ancestorLevels?: number; includeSiblings?: boolean; childDepth?: number }) {
+      const ref = hashRef.replace(/^#/, "");
+      const refStore = getActiveRefStore() ?? _debugRefStore;
+      const el = refStore?.get(ref);
+      if (!el) return `[ERROR] Element #${ref} not found in RefStore (size=${refStore?.size ?? 0})`;
+      return generateFocusedSnapshot({
+        targetElement: el,
+        ancestorLevels: options?.ancestorLevels,
+        includeSiblings: options?.includeSiblings,
+        childDepth: options?.childDepth,
+        refStore,
+      });
+    },
+
+    /**
+     * 智能 diff：逐行 diff（保留层级缩进）为主体，
+     * 附加语义 diff（属性级变化：val/checked/text）补充细节。
+     */
+    diff(base: string, current: string, maxLines?: number) {
+      const lineDiff = computeSnapshotDiff(base, current, maxLines);
+      const semantic = computeSemanticDiff(base, current, maxLines);
+      // 语义 diff 只保留属性变化行（~ 开头），结构增删已由 lineDiff 覆盖
+      const attrChanges = semantic
+        ? semantic.split("\n").filter(l => l.startsWith("~ ")).join("\n")
+        : "";
+      if (!lineDiff) return attrChanges;
+      if (!attrChanges) return lineDiff;
+      return lineDiff + "\n\n" + attrChanges;
+    },
+
+    /** 节点级语义 diff（仅基于 #hashID 匹配，无 hash 时返回空） */
+    semanticDiff: computeSemanticDiff,
+
+    /** 逐行文本 diff */
+    lineDiff: computeSnapshotDiff,
+
+    /** 获取当前 RefStore */
+    refStore: getActiveRefStore,
+  };
+}

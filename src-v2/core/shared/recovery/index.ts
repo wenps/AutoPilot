@@ -66,6 +66,7 @@ export async function handleElementRecovery(
     await sleep(recoveryWaitMs);
     callbacks?.onBeforeRecoverySnapshot?.();
     pageContext.latestSnapshot = await readPageSnapshot(registry);
+    callbacks?.onAfterSnapshot?.();
 
     return {
       content: [
@@ -120,6 +121,7 @@ export async function handleNavigationUrlChange(
   ) {
     callbacks?.onBeforeRecoverySnapshot?.();
     pageContext.latestSnapshot = await readPageSnapshot(registry);
+    callbacks?.onAfterSnapshot?.();
   }
 }
 

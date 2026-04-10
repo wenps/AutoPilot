@@ -90,7 +90,7 @@ export function buildMicroTaskPrompt(params: MicroTaskPromptParams): string {
       ...buildCoreOperationRules(),
 
       // ── 微任务专有：必须完成规则 ──
-      "- **You MUST complete your entire assigned task.** Do not output REMAINING: DONE until every part is finished. If an operation encounters difficulty (element not visible, popup overlay blocking, unexpected state), try different approaches (alternative selector, scroll into view, dismiss overlay, use evaluate tool) instead of skipping. For form fields, every field in your task description must be filled.", // 【关键】必须完成全部任务，遇到困难换方法不能跳过
+      "- **WARNING: You MUST complete your ENTIRE assigned task. Do NOT output REMAINING: DONE until EVERY part is finished AND the expected values are VISIBLE in the snapshot.** Check the snapshot carefully — if the target field still shows placeholder/default/empty, you are NOT done. If an operation fails, try alternative approaches (different selector, scroll, dismiss overlay, use evaluate) — NEVER skip any part.", // 【关键】必须完成全部任务，快照中必须看到预期值
       "- Stop: when remaining task is fully achieved (confirmed in snapshot), output REMAINING: DONE with a summary.", // 任务完成输出 DONE
       "",
 

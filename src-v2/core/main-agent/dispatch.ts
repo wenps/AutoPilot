@@ -101,7 +101,12 @@ export async function executeMicroTask(
     ? { taskAssertions: descriptor.assertions }
     : undefined;
 
-  // 3. 调用共享执行引擎
+  // 3. 从 descriptor.focusRef 或任务描述中提取初始聚焦目标（如 #abc123）
+  const focusRefMatch = descriptor.task.match(/#([a-z0-9]{4,})\b/i);
+  const initialFocusRef = descriptor.focusRef
+    || (focusRefMatch ? focusRefMatch[1] : undefined);
+
+  // 4. 调用共享执行引擎（微任务启用聚焦快照模式）
   const result = await executeAgentLoop({
     client: aiClient,
     registry: tools,
@@ -112,6 +117,8 @@ export async function executeMicroTask(
     roundStabilityWait,
     assertionConfig,
     callbacks,
+    focusedMode: true,
+    initialFocusRef,
     // 不传 history — 微任务独立上下文，不累积对话历史
   });
 

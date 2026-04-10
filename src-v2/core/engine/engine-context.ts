@@ -18,10 +18,10 @@ import {
   DEFAULT_ROUND_STABILITY_WAIT_TIMEOUT_MS,
 } from "../shared/constants.js";
 import {
-  splitUserGoalIntoTasks,
-  hasToolError,
+  splitUserGoalIntoTasks
 } from "../shared/helpers.js";
-import { readPageSnapshot } from "../shared/snapshot/index.js";
+import { readPageSnapshot, readAssertionPageSnapshot, readFocusedPageSnapshot } from "../shared/snapshot/index.js";
+import { computeSnapshotDiff } from "../shared/helpers.js";
 import type {
   AgentLoopParams,
   AgentLoopResult,
@@ -84,6 +84,22 @@ export class EngineContext {
   snapshotExpandRefIds = new Set<string>();
   previousRoundSnapshot = "";
 
+  // ═══ 微任务聚焦模式 ═══
+  /** 微任务基准快照（微任务开始时拍摄，整个微任务期间不变） */
+  microTaskBaseSnapshot: string | undefined;
+  /** 当前聚焦目标的 hash ref（AI 每轮指定） */
+  focusTargetRef: string | undefined;
+  /** 是否启用聚焦模式 */
+  focusedMode: boolean;
+  /** 聚焦快照内容（refreshFocusedSnapshot 产出） */
+  focusedSnapshot: string | undefined;
+  /** 基准 diff 内容（refreshFocusedSnapshot 产出） */
+  baseDiff: string | undefined;
+
+  // ═══ 断言快照 ═══
+  /** 断言专用快照（无 hash ID、无 listeners，纯结构+状态） */
+  assertionSnapshot: string | undefined;
+
   // ═══ 任务推进状态 ═══
   remainingInstruction: string;
   previousRoundTasks: string[] = [];
@@ -141,6 +157,8 @@ export class EngineContext {
     this.remainingInstruction = params.message.trim();
     this.previousRoundRemaining = this.remainingInstruction;
     this.taskItems = splitUserGoalIntoTasks(params.message);
+    this.focusedMode = params.focusedMode ?? false;
+    this.focusTargetRef = params.initialFocusRef;
 
     if (this.pageContext.latestSnapshot) {
       this.recordSnapshotStats(this.pageContext.latestSnapshot);
@@ -164,6 +182,72 @@ export class EngineContext {
         : undefined,
     );
     this.recordSnapshotStats(this.pageContext.latestSnapshot);
+    this.callbacks?.onAfterSnapshot?.();
+  }
+
+  /**
+   * 读取聚焦快照（聚焦区域 + 基准 diff）。
+   *
+   * 当 focusTargetRef 有效时：
+   * 1. 生成聚焦区域快照（目标元素的关联链）
+   * 2. 内部拍一次全量快照用于 diff 计算（不注入给 AI）
+   * 3. 计算 diff(基准, 当前全量)
+   *
+   * 当 focusTargetRef 无效或聚焦失败时：
+   * fallback 到全量快照，清除 focusTargetRef。
+   */
+  async refreshFocusedSnapshot(): Promise<void> {
+    if (!this.focusedMode || !this.focusTargetRef) {
+      // 无聚焦目标，走全量
+      await this.refreshSnapshot();
+      this.focusedSnapshot = undefined;
+      this.baseDiff = undefined;
+      return;
+    }
+
+    // 1. 尝试生成聚焦快照
+    const focused = await readFocusedPageSnapshot(
+      this.registry,
+      this.focusTargetRef,
+    );
+
+    // 2. 内部拍全量快照用于 diff（也更新 latestSnapshot 供断言等使用）
+    await this.refreshSnapshot();
+
+    // 3. 判断聚焦是否成功
+    // readFocusedPageSnapshot 在找不到元素时内部 fallback 到全量，
+    // 结果会和全量快照相同——此时视为聚焦失败
+    if (!focused || focused === this.pageContext.latestSnapshot) {
+      // 聚焦失败，但不清除 focusTargetRef — 保留目标，下一轮 DOM 变化后可能能找到
+      this.focusedSnapshot = undefined;
+      this.baseDiff = undefined;
+      return;
+    }
+
+    // 4. 聚焦成功
+    this.focusedSnapshot = focused;
+
+    // 5. 计算基准 diff
+    if (this.microTaskBaseSnapshot) {
+      this.baseDiff = computeSnapshotDiff(
+        this.microTaskBaseSnapshot,
+        this.pageContext.latestSnapshot || "",
+        80,  // 更多行
+        4,   // 更多兄弟
+      );
+    } else {
+      this.baseDiff = undefined;
+    }
+  }
+
+  /**
+   * 读取断言专用快照 — 无 hash ID、无 listeners。
+   *
+   * 断言 AI 只需判断页面状态，不操作元素，因此省略交互信息可节省 token。
+   */
+  async refreshAssertionSnapshot(): Promise<void> {
+    this.assertionSnapshot = await readAssertionPageSnapshot(this.registry);
+    this.recordSnapshotStats(this.assertionSnapshot);
   }
 
   async runRoundStabilityBarrier(): Promise<void> {

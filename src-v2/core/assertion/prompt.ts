@@ -35,6 +35,7 @@ export function buildAssertionSystemPrompt(): string {
     "- A task is PASSED if the comparison clearly shows the expected outcome.", // 如果对比清晰地显示了预期结果，则该任务通过。
     "- If there is no detectable change or the expected outcome is not visible, the task is FAILED.", // 如果没有可检测的变化或预期结果不可见，则该任务失败。
     "- Be strict: partial completion = FAILED.", // 严格判断：部分完成 = 失败
+    "- For form-filling tasks: check EVERY mentioned field individually. A field is filled if it shows a non-placeholder, non-default value (val=\"...\", checked, is-checked, is-active, bg=\"...\"). If ANY field is still empty/default, the task is FAILED — even if other fields are correct.", // 表单专用检查规则
     "- `is-active`, `checked`, `selected`, color values, text content, element presence — all must match the assertion description.", // `is-active`、`checked`、`selected`、颜色值、文本内容、元素存在与否等都必须符合断言描述
     "",
     "## Output Format", // 输出格式

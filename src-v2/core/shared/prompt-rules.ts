@@ -121,6 +121,8 @@ export function buildCoreOperationRules(): string[] {
     "- Omitted children: output `SNAPSHOT_HINT: EXPAND_CHILDREN #<ref>`, wait for next snapshot.", // 省略的子元素用 HINT 展开
 
     // ── 通用约束 ──
+    "- **NEVER do anything beyond the task requirements.** No extra verifications, no unnecessary scrolls, no redundant clicks. If the task says \"fill form\", fill it — do not verify each field after filling, do not click submit unless asked.", // 禁止多余操作
+    "- **Empty field detection:** A form field is UNFILLED/DEFAULT if: text input has NO `val=\"...\"` attribute (or shows only placeholder); select/combobox shows placeholder text like \"请选择\"; checkbox/radio lacks `checked`; switch lacks `is-checked` class; color picker shows framework default (e.g. `#409eff`); slider/rate at leftmost/zero position. When you see a form, mentally check EVERY [label] and its paired control — if the value is empty/default and user wants it filled, it MUST be addressed.", // 表单空字段识别规则
     "- Do NOT verify values unless user explicitly asks.", // 不要验证已填的值
     "- Do NOT interact with AutoPilot UI unless user asks.", // 不要操作面板自身
     "- Completion = visible outcome in snapshot. If snapshot already shows the expected result (color changed, switch toggled, value present, dialog closed, etc.), the task IS done.", // 快照已显示预期结果就是完成

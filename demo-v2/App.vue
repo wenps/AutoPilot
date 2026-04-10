@@ -11,16 +11,16 @@
         <el-input
           v-model="token"
           type="password"
-          placeholder="MiniMax Token"
+          placeholder="GLM Token"
           size="small"
           style="width: 260px"
           show-password
           @change="onTokenChange"
         />
         <el-select v-model="model" size="small" style="width: 200px">
-          <el-option label="MiniMax-M2.5" value="MiniMax-M2.5" />
-          <el-option label="MiniMax-M2.5-highspeed" value="MiniMax-M2.5-highspeed" />
-          <el-option label="MiniMax-M2.1" value="MiniMax-M2.1" />
+          <el-option label="GLM-4.5-Air" value="GLM-4.5-Air" />
+          <el-option label="GLM-4-Flash" value="GLM-4-Flash" />
+          <el-option label="GLM-4-Plus" value="GLM-4-Plus" />
         </el-select>
         <el-select v-model="streamMode" size="small" style="width: 100px">
           <el-option label="stream" value="stream" />
@@ -122,10 +122,12 @@ import { demoMenuGroups, getDemoRouteMeta } from './router'
 
 // ===== Agent =====
 const agent = new WebAgent({
-  token: (import.meta as ImportMeta & { env: Record<string, string | undefined> }).env.MINIMAX_TOKEN ?? '',
-  provider: 'minimax',
-  model: 'MiniMax-M2.5-highspeed',
+  token: (import.meta as ImportMeta & { env: Record<string, string | undefined> }).env.GLM_TOKEN ?? '',
+  provider: 'glm',
+  model: 'GLM-4.5-Air',
   stream: false,
+  interactiveOverlay: true,
+  debug: true,
   panel: {
     enableMask: true,
     expanded: false,
@@ -133,6 +135,7 @@ const agent = new WebAgent({
     placeholder: '输入要执行的网页操作...',
   },
 })
+window.xx = agent.debugResponses
 agent.registerTools()
 agent.setSystemPrompt('demo', [
   'You are operating a routed enterprise admin demo page.',
@@ -186,7 +189,7 @@ const quickActions = computed(() => [
 // ===== 连接状态 =====
 const connected = ref(false)
 const token = ref('')
-const model = ref('MiniMax-M2.5')
+  const model = ref('GLM-4.5-Air')
 const streamMode = ref('json')
 const dryRun = ref(false)
 const memory = ref(false)

@@ -13,3 +13,6 @@ export { isFormItemContainer, findFormItemContainer } from "./form-item.js";
 export { sleep, getClickPoint, dispatchClickEvents, dispatchHoverEvents, dispatchInputEvents, setNativeValue, selectText } from "./event-dispatch.js";
 export { splitKeyCombo, resolveKeyCode, executePress } from "./keyboard.js";
 export { checkElementStable, scrollIntoViewIfNeeded, checkHitTarget, describeElement, ensureActionable, validateClickSignal } from "./actionability.js";
+export { forceHoverStyles, cleanupHoverStyles, hasActiveHoverForce } from "./hover-force.js";
+export { applyInteractiveOverlay, clearInteractiveOverlay, isInteractiveOverlayActive } from "./interactive-overlay.js";
+export { setInteractiveOverlayEnabled, getInteractiveOverlayEnabled } from "./interactive-overlay-store.js";

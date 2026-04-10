@@ -320,6 +320,11 @@ export function buildCompactMessages(
   snapshotDiff?: string,
   taskChecklist?: string,
   lastAssertionResult?: AssertionResult,
+  focusedModeContext?: {
+    focusedSnapshot: string;
+    focusTargetRef: string;
+    baseDiff?: string;
+  },
 ): AIMessage[] {
   const messages: AIMessage[] = history ? [...history] : [];
   const allowAgentUiInteraction = isExplicitAgentUiRequest(userMessage);
@@ -346,6 +351,9 @@ export function buildCompactMessages(
       parts.push(`URL: ${currentUrl}`);
     }
     if (latestSnapshot) {
+      const focusedInstructions = focusedModeContext
+        ? "In focused mode: output `FOCUS_TARGET: #hashId` to set/change your focus target for next round.\n"
+        : "";
       parts.push(
         "",
         "Use #hashID from snapshot. Do NOT call page_info (snapshot is auto-refreshed). Batch fills freely; at most ONE click (last) per round.",
@@ -359,11 +367,30 @@ export function buildCompactMessages(
         allowAgentUiInteraction
           ? "User explicitly asked to operate AutoPilot UI. You may interact with chat input/send/dock only as requested."
           : "Do NOT interact with any AI chat UI elements (chat input, send button, dock). Only operate on the actual page content.",
-        "Output: REMAINING: <new remaining> or REMAINING: DONE",
-        "",
-        "## Snapshot",
-        wrapSnapshot(latestSnapshot),
+        focusedInstructions + "Output: REMAINING: <new remaining> or REMAINING: DONE",
       );
+      // 聚焦模式：注入聚焦区域 + 基准 diff；否则注入全量快照
+      if (focusedModeContext) {
+        parts.push(
+          "",
+          `## Focused Area (target: #${focusedModeContext.focusTargetRef})`,
+          wrapSnapshot(focusedModeContext.focusedSnapshot),
+        );
+        if (focusedModeContext.baseDiff) {
+          parts.push(
+            "",
+            "## Changes Since Task Start",
+            "Lines prefixed with `-` were removed; `+` were added.",
+            focusedModeContext.baseDiff,
+          );
+        }
+      } else {
+        parts.push(
+          "",
+          "## Snapshot",
+          wrapSnapshot(latestSnapshot),
+        );
+      }
     }
     if (protocolViolationHint) {
       parts.push("", protocolViolationHint);
@@ -492,21 +519,45 @@ export function buildCompactMessages(
   }
 
   if (latestSnapshot) {
-    // 若有快照变化摘要，先注入即可读的 diff，再紧跟完整快照
-    if (snapshotDiff) {
+    // 聚焦模式：注入轮间 diff + 聚焦区域 + 基准 diff
+    if (focusedModeContext) {
+      if (snapshotDiff) {
+        contextParts.push(
+          "",
+          "## Snapshot Changes (since last round)",
+          "Lines prefixed with `-` were removed; `+` were added.",
+          snapshotDiff,
+        );
+      }
       contextParts.push(
         "",
-        "## Snapshot Changes (since last round)",
-        "Lines prefixed with `-` were removed; `+` were added.",
-        snapshotDiff,
+        `## Focused Area (target: #${focusedModeContext.focusTargetRef})`,
+        wrapSnapshot(focusedModeContext.focusedSnapshot),
+      );
+      if (focusedModeContext.baseDiff) {
+        contextParts.push(
+          "",
+          "## Changes Since Task Start",
+          "Lines prefixed with `-` were removed; `+` were added.",
+          focusedModeContext.baseDiff,
+        );
+      }
+    } else {
+      // 非聚焦模式：注入轮间 diff + 全量快照
+      if (snapshotDiff) {
+        contextParts.push(
+          "",
+          "## Snapshot Changes (since last round)",
+          "Lines prefixed with `-` were removed; `+` were added.",
+          snapshotDiff,
+        );
+      }
+      contextParts.push(
+        "",
+        "## Snapshot",
+        wrapSnapshot(latestSnapshot),
       );
     }
-    // 注入最新快照
-    contextParts.push(
-      "",
-      "## Snapshot",
-      wrapSnapshot(latestSnapshot),
-    );
   }
 
   messages.push({ role: "user", content: contextParts.join("\n") });

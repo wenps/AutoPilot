@@ -12,7 +12,7 @@
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition, ToolCallResult } from "../../core/shared/tool-registry.js";
 import { getActiveRefStore } from "../helpers/base/active-store.js";
-import { generateSnapshot } from "../../core/shared/snapshot/index.js";
+import { generateSnapshot, generateFocusedSnapshot } from "../../core/shared/snapshot/index.js";
 
 /**
  * 查询所有匹配元素并返回摘要信息（标签、文本、关键属性）。
@@ -91,6 +91,21 @@ export function createPageInfoTool(): ToolDefinition {
       listenerEvents: Type.Optional(
         Type.Array(Type.String({ description: "Snapshot listener event whitelist" })),
       ),
+      targetRef: Type.Optional(
+        Type.String({ description: "Target element hash ref for focused_snapshot" }),
+      ),
+      ancestorLevels: Type.Optional(
+        Type.Number({ description: "Ancestor levels to climb for focused_snapshot (default 3)" }),
+      ),
+      includeSiblings: Type.Optional(
+        Type.Boolean({ description: "Include sibling nodes in focused_snapshot (default true)" }),
+      ),
+      skipRefStore: Type.Optional(
+        Type.Boolean({ description: "Skip hash ID assignment (assertion mode)" }),
+      ),
+      skipListeners: Type.Optional(
+        Type.Boolean({ description: "Skip event listener output (assertion mode)" }),
+      ),
     }),
 
     execute: async (params): Promise<ToolCallResult> => {
@@ -142,6 +157,8 @@ export function createPageInfoTool(): ToolDefinition {
             const listenerEvents = Array.isArray(params.listenerEvents)
               ? (params.listenerEvents as unknown[]).filter((event): event is string => typeof event === "string")
               : undefined;
+            const skipRefStore = (params.skipRefStore as boolean) ?? false;
+            const skipListeners = (params.skipListeners as boolean) ?? false;
             const snapshot = generateSnapshot(document.body, {
               maxDepth,
               viewportOnly,
@@ -152,10 +169,63 @@ export function createPageInfoTool(): ToolDefinition {
               expandOptionLists,
               expandChildrenRefs,
               expandedChildrenLimit,
-              listenerEvents,
-              refStore: getActiveRefStore(),
+              listenerEvents: skipListeners ? [] : listenerEvents,
+              refStore: skipRefStore ? undefined : getActiveRefStore(),
             });
             return { content: snapshot };
+          }
+
+          case "focused_snapshot": {
+            // 框架内部动作：生成聚焦快照（以目标元素为中心的局部快照）
+            const targetRef = params.targetRef as string;
+            if (!targetRef) {
+              // 无目标 ref，fallback 到全量快照
+              const fallbackSnapshot = generateSnapshot(document.body, {
+                maxDepth: 12,
+                viewportOnly: false,
+                pruneLayout: true,
+                maxNodes: 500,
+                maxChildren: 30,
+                maxTextLength: 40,
+                refStore: getActiveRefStore(),
+              });
+              return { content: fallbackSnapshot };
+            }
+            const refStore = getActiveRefStore();
+            const targetElement = refStore?.get(targetRef);
+            if (!targetElement) {
+              // 元素未找到，fallback 到全量快照
+              const fallbackSnapshot = generateSnapshot(document.body, {
+                maxDepth: 12,
+                viewportOnly: false,
+                pruneLayout: true,
+                maxNodes: 500,
+                maxChildren: 30,
+                maxTextLength: 40,
+                refStore,
+              });
+              return { content: fallbackSnapshot };
+            }
+            const focusedResult = generateFocusedSnapshot({
+              targetElement,
+              ancestorLevels: typeof params.ancestorLevels === "number" ? params.ancestorLevels : undefined,
+              includeSiblings: typeof params.includeSiblings === "boolean" ? params.includeSiblings : undefined,
+              refStore,
+            });
+            // 聚焦快照为空（focusRoot 是 body），fallback 到全量
+            if (!focusedResult) {
+              const fallbackSnapshot = generateSnapshot(document.body, {
+                maxDepth: 12,
+                viewportOnly: false,
+                pruneLayout: true,
+                maxNodes: 500,
+                maxChildren: 30,
+                maxTextLength: 40,
+                refStore,
+              });
+              return { content: fallbackSnapshot };
+            }
+            return { content: focusedResult };
           }
 
           case "query_all": {

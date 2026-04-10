@@ -72,11 +72,25 @@ export async function prepareAndCallAI(
   snapshotHintRefs: string[];
 }> {
   const snapshotDiff = round > 0
-    ? computeSnapshotDiff(ctx.previousRoundSnapshot, ctx.pageContext.latestSnapshot || "")
+    ? computeSnapshotDiff(
+        ctx.previousRoundSnapshot,
+        ctx.pageContext.latestSnapshot || "",
+        ctx.focusedMode ? 80 : 60,   // 微任务允许更多行
+        ctx.focusedMode ? 4 : 2,     // 微任务展示更多兄弟
+      )
     : "";
   ctx.previousRoundSnapshot = ctx.pageContext.latestSnapshot || "";
 
   const effectivePrompt = stripSnapshotFromPrompt(ctx.systemPrompt);
+
+  // 构建聚焦模式上下文（仅当聚焦快照 + 目标 ref 有效时传入）
+  const focusedModeContext = ctx.focusedMode && ctx.focusedSnapshot && ctx.focusTargetRef
+    ? {
+      focusedSnapshot: ctx.focusedSnapshot,
+      focusTargetRef: ctx.focusTargetRef,
+      baseDiff: ctx.baseDiff,
+    }
+    : undefined;
 
   const chatMessages = buildCompactMessages(
     ctx.message,
@@ -92,6 +106,7 @@ export async function prepareAndCallAI(
     snapshotDiff,
     ctx.taskItems ? formatTaskChecklist(ctx.taskItems) : undefined,
     ctx.lastAssertionResult,
+    focusedModeContext,
   );
 
   if (ctx.pendingNotFoundRetry && ctx.pendingNotFoundRetry.tasks.length > 0) {
@@ -116,6 +131,7 @@ export async function prepareAndCallAI(
     tools: ctx.tools,
   });
 
+  ctx.callbacks?.onAIResponse?.(response);
   ctx.inputTokens += response.usage?.inputTokens ?? 0;
   ctx.outputTokens += response.usage?.outputTokens ?? 0;
 
@@ -123,6 +139,14 @@ export async function prepareAndCallAI(
   const snapshotHintRefs = parseSnapshotExpandHints(response.text);
   for (const ref of snapshotHintRefs.slice(0, 8)) {
     ctx.snapshotExpandRefIds.add(ref);
+  }
+
+  // 解析 FOCUS_TARGET 协议（聚焦模式下 AI 指定聚焦目标）
+  if (ctx.focusedMode && response.text) {
+    const focusMatch = response.text.match(/FOCUS_TARGET\s*:\s*#?([A-Za-z0-9_-]+)/i);
+    if (focusMatch) {
+      ctx.focusTargetRef = focusMatch[1];
+    }
   }
 
   return { response, parsedState, snapshotHintRefs };
@@ -389,15 +413,22 @@ export async function handleAssertionTool(
   round: number,
   response: AIChatResponse,
 ): Promise<LoopSignal> {
-  // 动作后快照
-  await ctx.refreshSnapshot();
-  const postActionSnapshot = ctx.pageContext.latestSnapshot || "";
+  // 动作后快照（断言专用：无 hash ID、无 listeners）
+  await ctx.refreshAssertionSnapshot();
+  const postActionSnapshot = ctx.assertionSnapshot || "";
 
   if (roundResult.roundHasPotentialDomMutation) {
     await ctx.runRoundStabilityBarrier();
   }
   await ctx.callbacks?.onBeforeAssertionSnapshot?.();
-  await ctx.refreshSnapshot();
+  // 断言最终快照：无 hash ID、无 listeners
+  await ctx.refreshAssertionSnapshot();
+  // 同时刷新执行快照（供后续轮次使用）
+  if (ctx.focusedMode && ctx.focusTargetRef) {
+    await ctx.refreshFocusedSnapshot();
+  } else {
+    await ctx.refreshSnapshot();
+  }
 
   const taskAssertions = (ctx.assertionConfig && ctx.assertionConfig.taskAssertions.length > 0)
     ? ctx.assertionConfig.taskAssertions
@@ -409,12 +440,16 @@ export async function handleAssertionTool(
 
   ctx.callbacks?.onToolCall?.("assert", assertToolCall.input);
 
+  // 断言使用无 hash/无 listeners 的纯结构快照
+  const assertionCurrentSnapshot = ctx.assertionSnapshot || "";
+  const assertionInitialSnapshot = ctx.initialSnapshot;
+
   const assertionResult = await evaluateAssertions(
     ctx.client,
-    ctx.pageContext.latestSnapshot || "",
+    assertionCurrentSnapshot,
     actionSummaries,
     taskAssertions,
-    ctx.initialSnapshot,
+    assertionInitialSnapshot,
     postActionSnapshot,
   );
   ctx.lastAssertionResult = assertionResult;
@@ -586,8 +621,12 @@ export async function runPostRoundGuards(
     await ctx.runRoundStabilityBarrier();
   }
 
-  // 刷新快照
-  await ctx.refreshSnapshot();
+  // 刷新快照（聚焦模式下同时刷新聚焦快照 + 内部全量）
+  if (ctx.focusedMode && ctx.focusTargetRef) {
+    await ctx.refreshFocusedSnapshot();
+  } else {
+    await ctx.refreshSnapshot();
+  }
 
   // 快照指纹对比
   if (roundResult.roundHasPotentialDomMutation) {

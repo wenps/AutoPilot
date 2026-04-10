@@ -371,8 +371,11 @@ export class MainAgent {
           "Use this for complex forms (>5 fields), multi-step workflows, or repetitive operations.",
         schema: Type.Object({
           task: Type.String({ description: "Clear, specific task description for the micro-task agent" }),
+          focusRef: Type.Optional(Type.String({
+            description: "Hash ref (#id) of the form/container element to focus on."
+          })),
         }),
-        execute: (params) => orchestrationCtx!.dispatch(params as { task: string }),
+        execute: (params) => orchestrationCtx!.dispatch(params as { task: string; focusRef?: string }),
       });
     }
 

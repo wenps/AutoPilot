@@ -160,86 +160,386 @@ function _normalizeHashIds(text: string): string {
   return text.replace(/#[a-z0-9]{4,}/gi, "#_");
 }
 
+/** 获取行的缩进级别（前导空格数），用于从快照文本推导 DOM 树层级。 */
+function _getIndent(text: string): number {
+  const m = text.match(/^(\s*)/);
+  return m ? m[1].length : 0;
+}
+
 /**
- * 对比前后两份快照，输出变化摘要。
+ * 对比前后两份快照，输出带树感知上下文的 diff。
  *
- * 归一化 hashID 后逐行对比，提取新增、删除、变更行。
- * 返回简短的变化摘要字符串，token 成本可控（最多 maxLines 行）。
+ * 核心设计：以 currRaw（当前快照）作为有效 DOM 树骨架计算上下文，
+ * 避免在混合的 edits 序列上推导树结构导致祖先链断裂。
+ *
+ * 树感知上下文策略：
+ * - **祖先链**：从变化位置在 currRaw 中向上收集严格递减缩进的行
+ * - **子节点**：新增节点的全部子节点展开（最多 50 行）
+ * - **兄弟节点**：同缩进级别上下各取 contextLines 个（默认 3），遇父边界则停
+ * - 删除行映射到 currRaw 的对应位置后插入，上下文从 currRaw 取
+ * - 多处变化（hunk）之间用 `---` 分隔
+ * - 匹配时归一化 hashID（`#abc → #_`），但输出保留原始 hash 供 AI 引用
+ *
  * 若无差异或前一份快照为空，返回空字符串。
- *
- * 用途：注入到下一轮用户消息中，让 AI 直接看到"什么变了"，
- * 避免靠 AI 自行对比前后快照（尤其是微小变化如 checked 消失）。
  */
 export function computeSnapshotDiff(
   prevSnapshot: string,
   currSnapshot: string,
-  maxLines = 20,
+  maxLines = 60,
+  contextLines = 2,
 ): string {
   if (!prevSnapshot || !currSnapshot) return "";
 
-  const prevLines = _normalizeHashIds(prevSnapshot).split("\n");
-  const currLines = _normalizeHashIds(currSnapshot).split("\n");
+  const prevRaw = prevSnapshot.split("\n");
+  const currRaw = currSnapshot.split("\n");
 
-  // 逐行对比（简单 LCS 对齐太重，用滑动匹配找到已有行的位移）
-  const prevSet = new Map<string, number[]>();
-  for (let i = 0; i < prevLines.length; i++) {
-    const trimmed = prevLines[i].trimEnd();
-    if (!trimmed) continue;
-    const arr = prevSet.get(trimmed) || [];
-    arr.push(i);
-    prevSet.set(trimmed, arr);
+  // 归一化 hash 用于匹配（但输出保留原始行）
+  const prevNorm = prevRaw.map(l => _normalizeHashIds(l.trimEnd()));
+  const currNorm = currRaw.map(l => _normalizeHashIds(l.trimEnd()));
+
+  // ── Step 1: 贪心位置匹配 ──
+  // 为 prev 的每个归一化行建立索引
+  const prevIndex = new Map<string, number[]>();
+  for (let i = 0; i < prevNorm.length; i++) {
+    if (!prevNorm[i]) continue;
+    const arr = prevIndex.get(prevNorm[i]);
+    if (arr) arr.push(i);
+    else prevIndex.set(prevNorm[i], [i]);
   }
 
-  const added: string[] = [];
-  const removed = new Set<number>();
+  // curr 的每行在 prev 中找最近未用位置匹配
+  const usedPrev = new Set<number>();
+  const currMatch: (number | -1)[] = new Array(currNorm.length).fill(-1);
+  let lastMatchedPrev = -1;
 
-  // 标记 prev 中被 curr 命中的行
-  const usedPrevIndices = new Set<number>();
-  for (let i = 0; i < currLines.length; i++) {
-    const trimmed = currLines[i].trimEnd();
-    if (!trimmed) continue;
-    const candidates = prevSet.get(trimmed);
-    if (candidates) {
-      // 用最近的未使用的匹配行
-      let matched = false;
-      for (const idx of candidates) {
-        if (!usedPrevIndices.has(idx)) {
-          usedPrevIndices.add(idx);
-          matched = true;
+  for (let ci = 0; ci < currNorm.length; ci++) {
+    if (!currNorm[ci]) continue;
+    const candidates = prevIndex.get(currNorm[ci]);
+    if (!candidates) continue;
+
+    // 找 >= lastMatchedPrev+1 的最小未用候选（保持顺序单调）
+    let best = -1;
+    for (const pi of candidates) {
+      if (pi > lastMatchedPrev && !usedPrev.has(pi)) {
+        best = pi;
+        break;
+      }
+    }
+    // 如果单调搜索失败，退而求其次找任意未用候选
+    if (best === -1) {
+      for (const pi of candidates) {
+        if (!usedPrev.has(pi)) {
+          best = pi;
           break;
         }
       }
-      if (!matched) {
-        added.push(`+ ${trimmed.trim()}`);
+    }
+    if (best !== -1) {
+      currMatch[ci] = best;
+      usedPrev.add(best);
+      lastMatchedPrev = best;
+    }
+  }
+
+  // ── Step 2: 标记变化行 ──
+  const addInCurr = new Set<number>();
+  for (let ci = 0; ci < currRaw.length; ci++) {
+    if (currMatch[ci] === -1 && currNorm[ci]) addInCurr.add(ci);
+  }
+  const removeInPrev: number[] = [];
+  for (let pi = 0; pi < prevRaw.length; pi++) {
+    if (!usedPrev.has(pi) && prevNorm[pi]) removeInPrev.push(pi);
+  }
+  if (addInCurr.size === 0 && removeInPrev.length === 0) return "";
+
+  // ── Step 3: 将删除行映射到 currRaw 插入位置 ──
+  // prevRaw index → currRaw index 反向映射
+  const prevToCurr = new Map<number, number>();
+  for (let ci = 0; ci < currMatch.length; ci++) {
+    if (currMatch[ci] !== -1) prevToCurr.set(currMatch[ci], ci);
+  }
+  // 每个删除行找到它在 currRaw 中应插入的位置（afterCi = 上方最近匹配行的 currRaw 索引）
+  const removesAtCurr = new Map<number, string[]>(); // afterCi → 删除行原始文本
+  for (const pi of removeInPrev) {
+    let afterCi = -1;
+    for (let j = pi - 1; j >= 0; j--) {
+      if (prevToCurr.has(j)) { afterCi = prevToCurr.get(j)!; break; }
+    }
+    if (!removesAtCurr.has(afterCi)) removesAtCurr.set(afterCi, []);
+    removesAtCurr.get(afterCi)!.push(prevRaw[pi]);
+  }
+
+  // ── Step 4: 在 currRaw 上计算树感知上下文 ──
+  // 关键：上下文始终基于 currRaw（有效 DOM 树），而非混合的 edits 序列
+  const SIBLING_CTX = Math.max(contextLines, 3);
+  const MAX_CHILD_LINES = 50;
+  const inCtx = new Set<number>(); // currRaw 行索引
+
+  /** 为 currRaw 中的某个位置添加树上下文（祖先链 + 兄弟） */
+  function _addTreeCtx(ci: number, overrideIndent?: number) {
+    const myInd = overrideIndent ?? _getIndent(currRaw[ci]);
+    // 祖先链：向上找严格递减缩进
+    let need = myInd;
+    for (let j = ci - 1; j >= 0 && need > 0; j--) {
+      const ind = _getIndent(currRaw[j]);
+      if (ind < need) { inCtx.add(j); need = ind; }
+    }
+    // 兄弟上
+    let su = 0;
+    for (let j = ci - 1; j >= 0 && su < SIBLING_CTX; j--) {
+      const ind = _getIndent(currRaw[j]);
+      if (ind < myInd) break;
+      if (ind === myInd) { inCtx.add(j); su++; }
+    }
+    // 兄弟下
+    let sd = 0;
+    for (let j = ci + 1; j < currRaw.length && sd < SIBLING_CTX; j++) {
+      const ind = _getIndent(currRaw[j]);
+      if (ind < myInd) break;
+      if (ind === myInd) { inCtx.add(j); sd++; }
+    }
+  }
+
+  // 为新增行添加上下文（含子节点全展开）
+  for (const ci of addInCurr) {
+    inCtx.add(ci);
+    _addTreeCtx(ci);
+    const myInd = _getIndent(currRaw[ci]);
+    let cc = 0;
+    for (let j = ci + 1; j < currRaw.length; j++) {
+      if (_getIndent(currRaw[j]) <= myInd) break;
+      inCtx.add(j);
+      if (++cc >= MAX_CHILD_LINES) break;
+    }
+  }
+
+  // 为删除行的插入点添加上下文（用删除行的缩进找祖先/兄弟）
+  for (const [afterCi, texts] of removesAtCurr) {
+    if (afterCi >= 0) {
+      inCtx.add(afterCi);
+      _addTreeCtx(afterCi, _getIndent(texts[0]));
+    }
+  }
+
+  // ── Step 5: 以 currRaw 为骨架输出，在插入点嵌入删除行 ──
+  const hunks: string[] = [];
+  let lineCount = 0;
+  let inHunk = false;
+
+  // 处理插在 currRaw 最前面的删除行（afterCi = -1）
+  const beforeAll = removesAtCurr.get(-1);
+  if (beforeAll) {
+    inHunk = true;
+    for (const t of beforeAll) {
+      hunks.push("- " + t.trimEnd());
+      lineCount++;
+    }
+  }
+
+  for (let ci = 0; ci < currRaw.length; ci++) {
+    const isAdd = addInCurr.has(ci);
+    const isContext = inCtx.has(ci);
+    const removes = removesAtCurr.get(ci);
+
+    if (!isAdd && !isContext && !removes) {
+      if (inHunk) inHunk = false;
+      continue;
+    }
+
+    if (!inHunk) {
+      if (hunks.length > 0) hunks.push("---");
+      inHunk = true;
+    }
+
+    // 输出 currRaw 行（新增或上下文）
+    if (isAdd || isContext) {
+      hunks.push((isAdd ? "+ " : "  ") + currRaw[ci].trimEnd());
+      lineCount++;
+    }
+
+    // 在此位置之后插入删除行
+    if (removes) {
+      for (const t of removes) {
+        hunks.push("- " + t.trimEnd());
+        lineCount++;
       }
-    } else {
-      added.push(`+ ${trimmed.trim()}`);
+    }
+
+    if (lineCount >= maxLines) {
+      let rem = 0;
+      for (let j = ci + 1; j < currRaw.length; j++) {
+        if (addInCurr.has(j)) rem++;
+      }
+      for (const [aci, ts] of removesAtCurr) {
+        if (aci > ci) rem += ts.length;
+      }
+      if (rem > 0) hunks.push(`... (${rem} more changes)`);
+      break;
     }
   }
 
-  for (let i = 0; i < prevLines.length; i++) {
-    const trimmed = prevLines[i].trimEnd();
-    if (!trimmed) continue;
-    if (!usedPrevIndices.has(i)) {
-      removed.add(i);
+  return hunks.join("\n");
+}
+
+/**
+ * 计算语义化 diff（基准快照 vs 当前快照）— 基于节点级结构化对比。
+ *
+ * 与逐行文本 diff（computeSnapshotDiff）不同，本函数：
+ * 1. 以 #hashID 为锚点匹配前后元素（交互节点）
+ * 2. 匹配成功的节点只报语义属性变化（val、checked、selected、disabled、文本）
+ * 3. 无法匹配的节点报为新增/删除（含标签和文本摘要）
+ * 4. 无 hashID 的非交互节点直接忽略（不影响操作）
+ *
+ * 输出格式示例：
+ * ```
+ * ~ #abc123 val: "" → "test-instance-prod"
+ * ~ #def456 +checked
+ * ~ #ghi789 text: "提交" → "已提交"
+ * + [dialog] "确认开通" #xyz789
+ * - [listbox] #old123
+ * ```
+ *
+ * @param baseSnapshot    微任务开始时拍摄的基准快照
+ * @param currentSnapshot 当前全量快照
+ * @param maxLines        输出最大行数（默认 30）
+ */
+export function computeSemanticDiff(
+  baseSnapshot: string,
+  currentSnapshot: string,
+  maxLines = 30,
+): string {
+  if (!baseSnapshot || !currentSnapshot) return "";
+
+  const baseNodes = _parseSnapshotNodes(baseSnapshot);
+  const currNodes = _parseSnapshotNodes(currentSnapshot);
+
+  const baseMap = new Map<string, SnapshotNode>();
+  for (const node of baseNodes) baseMap.set(node.hashId, node);
+
+  const currMap = new Map<string, SnapshotNode>();
+  for (const node of currNodes) currMap.set(node.hashId, node);
+
+  const changes: string[] = [];
+
+  // 1. 匹配到的节点 — 只报语义变化
+  for (const [id, curr] of currMap) {
+    const base = baseMap.get(id);
+    if (!base) continue; // 新增节点，下面处理
+
+    const diffs = _diffNodeSemantics(base, curr);
+    if (diffs.length > 0) {
+      changes.push(`~ #${id} ${diffs.join(", ")}`);
     }
   }
 
-  const removedLines: string[] = [];
-  for (const idx of removed) {
-    removedLines.push(`- ${prevLines[idx].trim()}`);
+  // 2. 新增节点（current 有，base 没有）
+  for (const [id, curr] of currMap) {
+    if (baseMap.has(id)) continue;
+    const text = curr.text ? ` "${curr.text.slice(0, 30)}"` : "";
+    changes.push(`+ [${curr.tag}]${text} #${id}`);
   }
 
-  const allChanges = [...removedLines, ...added];
-  if (allChanges.length === 0) return "";
+  // 3. 删除节点（base 有，current 没有）
+  for (const [id, base] of baseMap) {
+    if (currMap.has(id)) continue;
+    const text = base.text ? ` "${base.text.slice(0, 30)}"` : "";
+    changes.push(`- [${base.tag}]${text} #${id}`);
+  }
 
-  // 控制输出长度
-  const truncated = allChanges.slice(0, maxLines);
+  if (changes.length === 0) return "";
+
+  const truncated = changes.slice(0, maxLines);
   const result = truncated.join("\n");
-  if (allChanges.length > maxLines) {
-    return result + `\n... (${allChanges.length - maxLines} more changes)`;
+  if (changes.length > maxLines) {
+    return result + `\n... (${changes.length - maxLines} more changes)`;
   }
   return result;
+}
+
+/** 快照节点解析结果（仅交互节点，带 #hashID） */
+type SnapshotNode = {
+  hashId: string;
+  tag: string;
+  text: string;
+  val: string;
+  boolAttrs: Set<string>; // checked, selected, disabled, readonly, required, hidden
+  ariaExpanded: string;
+};
+
+/** 从快照行提取语义字段的正则集合 */
+const _NODE_HASH_RE = /#([a-z0-9]{4,})\s*$/i;
+const _NODE_TAG_RE = /\[([a-z0-9-]+)\]/i;
+const _NODE_TEXT_RE = /\]\s*"([^"]*)"/;
+const _NODE_VAL_RE = /\bval="([^"]*)"/;
+const _NODE_ARIA_EXPANDED_RE = /\baria-expanded="([^"]*)"/;
+const _BOOL_ATTRS = ["checked", "selected", "disabled", "readonly", "required", "hidden"];
+
+/**
+ * 从快照文本解析出所有带 hashID 的交互节点。
+ * 只提取语义相关字段，忽略 class/listeners/type/placeholder 等。
+ */
+function _parseSnapshotNodes(snapshot: string): SnapshotNode[] {
+  const nodes: SnapshotNode[] = [];
+  for (const line of snapshot.split("\n")) {
+    const hashMatch = _NODE_HASH_RE.exec(line);
+    if (!hashMatch) continue; // 无 hashID → 非交互节点，跳过
+
+    const tagMatch = _NODE_TAG_RE.exec(line);
+    const textMatch = _NODE_TEXT_RE.exec(line);
+    const valMatch = _NODE_VAL_RE.exec(line);
+    const ariaMatch = _NODE_ARIA_EXPANDED_RE.exec(line);
+
+    const boolAttrs = new Set<string>();
+    for (const attr of _BOOL_ATTRS) {
+      // 匹配独立单词（避免 "unchecked" 误匹配 "checked"）
+      if (new RegExp(`\\b${attr}\\b`).test(line)) {
+        boolAttrs.add(attr);
+      }
+    }
+
+    nodes.push({
+      hashId: hashMatch[1],
+      tag: tagMatch?.[1] ?? "?",
+      text: textMatch?.[1] ?? "",
+      val: valMatch?.[1] ?? "",
+      boolAttrs,
+      ariaExpanded: ariaMatch?.[1] ?? "",
+    });
+  }
+  return nodes;
+}
+
+/**
+ * 对比两个同 hashID 节点的语义差异。
+ * 只关注值、文本、布尔状态的变化，输出简短描述数组。
+ */
+function _diffNodeSemantics(base: SnapshotNode, curr: SnapshotNode): string[] {
+  const diffs: string[] = [];
+
+  // val 变化
+  if (base.val !== curr.val) {
+    diffs.push(`val: "${base.val}" → "${curr.val}"`);
+  }
+
+  // 文本变化
+  if (base.text !== curr.text) {
+    diffs.push(`text: "${base.text.slice(0, 25)}" → "${curr.text.slice(0, 25)}"`);
+  }
+
+  // 布尔属性变化
+  for (const attr of _BOOL_ATTRS) {
+    const had = base.boolAttrs.has(attr);
+    const has = curr.boolAttrs.has(attr);
+    if (had && !has) diffs.push(`-${attr}`);
+    if (!had && has) diffs.push(`+${attr}`);
+  }
+
+  // aria-expanded 变化（下拉展开/收起）
+  if (base.ariaExpanded !== curr.ariaExpanded && curr.ariaExpanded) {
+    diffs.push(`aria-expanded: ${base.ariaExpanded || "unset"} → ${curr.ariaExpanded}`);
+  }
+
+  return diffs;
 }
 
 /**

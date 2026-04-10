@@ -85,7 +85,7 @@ export class OrchestrationContext {
    * 3. 成功后发起异步断言（不阻塞）
    * 4. 返回 ToolCallResult（含成功/失败状态 + 已完成微任务汇总）
    */
-  async dispatch(params: { task: string }): Promise<ToolCallResult> {
+  async dispatch(params: { task: string; focusRef?: string }): Promise<ToolCallResult> {
     const retryMessages: string[] = [];
 
     // Step 1: 检查之前的 pending assertions
@@ -93,7 +93,7 @@ export class OrchestrationContext {
 
     // Step 2: 执行新微任务
     const id = `mt-${++this.microTaskCounter}`;
-    const descriptor = { id, task: params.task };
+    const descriptor = { id, task: params.task, focusRef: params.focusRef?.replace(/^#/, '') };
 
     // 保存微任务执行前的快照，用于断言对比（before vs after）
     const preTaskSnapshot = this.latestSnapshot;

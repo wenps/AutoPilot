@@ -121,6 +121,8 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
     sections.push(
       [
         "## Execution Strategy", // 执行策略
+        "**BEFORE dispatching any micro-tasks, you MUST scan the ENTIRE snapshot and list ALL form fields** (every [label] + its control). Count them. A form with 4+ fields MUST use micro-tasks — this is NOT optional. Do NOT start dispatching until you have identified every field.", // 先扫描所有字段再派发
+        "",
         "You have two execution modes. **Analyze the snapshot's form structure first**, then choose:", // 先分析快照中的表单结构再选择模式
         "",
         // 两种模式说明
@@ -132,8 +134,9 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
 
         // 派发规则
         "### CRITICAL dispatch rules", // 派发规则
+        "- **You MUST dispatch ALL micro-tasks in a SINGLE round.** Do NOT dispatch some fields, wait for results, then dispatch the rest. Scan ALL fields → plan ALL micro-tasks → dispatch ALL in one batch.", // 【关键】一次性全量派发，禁止分多轮
         "- **NEVER mix dispatch_micro_task with DOM tool calls (dom, navigate, evaluate, etc.) in the same round.** A round is either ALL micro-task dispatches OR direct DOM actions — never both.", // 同一轮不能混用 dispatch 和 DOM 操作
-        "- **Every form field visible in the snapshot MUST be covered by a micro-task. Do not skip any field.**", // 每个可见字段都必须被微任务覆盖
+        "- **WARNING: Every single form field visible in the snapshot MUST be covered by a micro-task. Missing even ONE field = task failure. Scan all [label] elements, count them, then verify your micro-task list covers every one.**", // 每个可见字段都必须被微任务覆盖
         "- You may dispatch **multiple micro-tasks** in the same round (they run sequentially).", // 同一轮可派发多个微任务
         "- After dispatching, wait for results before taking further action.", // 派发后等待结果
         "",
@@ -142,15 +145,25 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
         "### Micro-task granularity", // 微任务粒度
         "- **All text inputs MUST be grouped into ONE micro-task.** Never dispatch separate micro-tasks for individual text fields. The micro-task agent will batch-fill them all in a single round.", // 【关键】所有文本输入必须合并到一个微任务，不能每个字段单独派
         "- **Everything else** (dropdown/select, checkbox, radio, color picker, date picker, date range, cascader, file upload, rich text editor, slider, tree select, transfer list, switch, rate, etc.): **each control = its own separate micro-task**", // 其他控件每个单独
+        "- Specifically — dispatch ONE micro-task for EACH of these:", // 具体分类
+        "  - Each dropdown/select (click → select option)", // 下拉
+        "  - Each date picker or date range picker", // 日期
+        "  - Each color picker", // 颜色
+        "  - Each switch/toggle (if it needs to be changed)", // 开关
+        "  - Each radio group (if a different option needs to be selected)", // 单选
+        "  - Each checkbox group (if checkboxes need to be toggled)", // 复选
+        "  - Each slider/rate control", // 滑块/评分
+        "  Do NOT group different control types into one micro-task.", // 不要混合
+        "- **Always include `focusRef`** in every dispatch call: set it to the #hashId of the form container (e.g. the [form] element or nearest ancestor wrapping all target fields). This gives the micro-task agent a focused snapshot instead of the full page.", // 【关键】每次 dispatch 都带 focusRef
         "",
         "Example — a form with name, email, city (dropdown), color (color picker), tags (checkbox), notes:", // 示例
         '```',
-        '// CORRECT: all text inputs in ONE micro-task',
-        'dispatch_micro_task({ "task": "Fill all text fields: name=John, email=john@test.com, notes=Test note" })',
+        '// CORRECT: all text inputs in ONE micro-task, always include focusRef',
+        'dispatch_micro_task({ "task": "Fill all text fields: name=John, email=john@test.com, notes=Test note", "focusRef": "#abc123" })',
         '// Each non-text control gets its own micro-task',
-        'dispatch_micro_task({ "task": "Open city dropdown and select Beijing" })',
-        'dispatch_micro_task({ "task": "Check the tag checkbox: Core" })',
-        'dispatch_micro_task({ "task": "Open color picker and select red (#ff0000)" })',
+        'dispatch_micro_task({ "task": "Open city dropdown and select Beijing", "focusRef": "#abc123" })',
+        'dispatch_micro_task({ "task": "Check the tag checkbox: Core", "focusRef": "#abc123" })',
+        'dispatch_micro_task({ "task": "Open color picker and select red (#ff0000)", "focusRef": "#abc123" })',
         '```',
         '```',
         '// WRONG: never do this — separate micro-tasks for each text field',
@@ -171,6 +184,7 @@ export function buildSystemPrompt(params: SystemPromptParams = {}): string {
         "- Each micro-task returns a success/failure status and execution record", // 返回状态和记录
         "- Failed micro-tasks include a failure reason — you MUST retry with a different approach, not skip", // 失败必须重试
         "- **You MUST dispatch micro-tasks for ALL fields/sections — do not stop after partial completion**", // 必须覆盖所有字段
+        "- **Do NOT output REMAINING: DONE after partial micro-task dispatches.** If you dispatched micro-tasks for text fields only, you are NOT done — you still need to dispatch for dropdowns, pickers, switches, etc.", // 禁止部分派发后就 DONE
         "- **After all micro-tasks complete, you MUST call `assert({})` before outputting REMAINING: DONE.** Do NOT output REMAINING: DONE without calling assert first. This is mandatory in orchestration mode.", // 【关键】编排模式下必须先调 assert 再 DONE，不能跳过
         "- **If assertion fails:** read the failure reason carefully. Identify which fields/controls were missed or incorrectly set. Then dispatch NEW micro-tasks targeting ONLY the failed/missing parts. Do NOT re-dispatch already successful micro-tasks.", // 【关键】断言失败后：只补派失败部分的微任务
       ].join("\n"),

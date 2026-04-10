@@ -115,6 +115,62 @@ export async function readPageSnapshot(
   return toContentString(result.content);
 }
 
+/**
+ * 读取断言专用快照。
+ *
+ * 保留 hash ID（断言 AI 需要匹配操作记录中的 #hashId 到快照元素），
+ * 但跳过 listeners="..." 输出（断言只判定状态，不需要交互信号）。
+ * 相比全量执行快照，省掉所有 listeners 属性文本，节约约 10-15% token。
+ */
+export async function readAssertionPageSnapshot(
+  registry: ToolRegistry,
+  options?: {
+    maxDepth?: number;
+    viewportOnly?: boolean;
+    pruneLayout?: boolean;
+    maxNodes?: number;
+    maxChildren?: number;
+    maxTextLength?: number;
+  },
+): Promise<string> {
+  const result = await registry.dispatch("page_info", {
+    action: "snapshot",
+    maxDepth: options?.maxDepth ?? 12,
+    viewportOnly: options?.viewportOnly ?? false,
+    pruneLayout: options?.pruneLayout ?? true,
+    maxNodes: options?.maxNodes ?? 500,
+    maxChildren: options?.maxChildren ?? 30,
+    maxTextLength: options?.maxTextLength ?? 40,
+    skipRefStore: false,
+    skipListeners: true,
+  });
+  return toContentString(result.content);
+}
+
+/**
+ * 读取聚焦快照。
+ *
+ * 通过 page_info.focused_snapshot action 生成以目标元素为中心的局部快照。
+ * 当目标元素找不到或生成失败时返回空字符串，由调用方 fallback 到全量快照。
+ *
+ * @param registry   工具注册表
+ * @param targetRef  目标元素的 hash ref（不含 # 前缀）
+ * @param options    聚焦选项（向上层数、是否包含兄弟等）
+ */
+export async function readFocusedPageSnapshot(
+  registry: ToolRegistry,
+  targetRef: string,
+  options?: { ancestorLevels?: number; includeSiblings?: boolean },
+): Promise<string> {
+  const result = await registry.dispatch("page_info", {
+    action: "focused_snapshot",
+    targetRef,
+    ancestorLevels: options?.ancestorLevels,
+    includeSiblings: options?.includeSiblings,
+  });
+  return toContentString(result.content);
+}
+
 // ─── 快照标记 ───
 
 /**

@@ -78,6 +78,8 @@ export type MicroTaskDescriptor = {
    * 对于简单微任务（如单次点击）可设为较小值以加速失败检测。
    */
   maxRounds?: number;
+  /** 聚焦目标的 hash ref（不含 #），微任务将聚焦此节点子树而非全量快照 */
+  focusRef?: string;
 };
 
 // ─── 微任务执行结果 ───

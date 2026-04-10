@@ -51,13 +51,30 @@ export async function executeAgentLoop(
 ): Promise<AgentLoopResult> {
   const ctx = new EngineContext(params);
 
+  // 聚焦模式：拍摄基准快照（仅一次，整个微任务期间不变）
+  if (ctx.focusedMode && !ctx.microTaskBaseSnapshot) {
+    // 必须调用 refreshSnapshot() 重新生成快照并填充 RefStore，
+    // 不能依赖 initialSnapshot 字符串 — 那只是文本，RefStore 没有对应映射
+    await ctx.refreshSnapshot();
+    ctx.microTaskBaseSnapshot = ctx.pageContext.latestSnapshot;
+
+    // 有初始聚焦目标时，立即生成聚焦快照供 Round 0 使用
+    if (ctx.focusTargetRef) {
+      await ctx.refreshFocusedSnapshot();
+    }
+  }
+
   for (let round = 0; round < ctx.maxRounds; round++) {
     ctx.callbacks?.onRound?.(round);
     ctx.usedRounds = round + 1;
 
     // 阶段 1: 确保快照
     if (!ctx.pageContext.latestSnapshot) {
-      await ctx.refreshSnapshot();
+      if (ctx.focusedMode && ctx.focusTargetRef) {
+        await ctx.refreshFocusedSnapshot();
+      } else {
+        await ctx.refreshSnapshot();
+      }
     }
 
     const roundStartFingerprint = computeSnapshotFingerprint(ctx.pageContext.latestSnapshot || "");

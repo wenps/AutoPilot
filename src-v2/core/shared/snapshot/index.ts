@@ -7,9 +7,16 @@
 export {
   readPageUrl,
   readPageSnapshot,
+  readAssertionPageSnapshot,
+  readFocusedPageSnapshot,
   wrapSnapshot,
   stripSnapshotFromPrompt,
   SNAPSHOT_REGEX,
 } from "./lifecycle.js";
 
-export { generateSnapshot, type SnapshotOptions } from "./engine.js";
+export {
+  generateSnapshot,
+  generateFocusedSnapshot,
+  type SnapshotOptions,
+  type FocusedSnapshotOptions,
+} from "./engine.js";

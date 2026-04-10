@@ -76,6 +76,20 @@ const DEFAULT_CLASSNAME_FILTERS: string[] = [
 
 /** 快照属性值最大保留长度（超出截断）。 */
 const MAX_SNAPSHOT_ATTR_VALUE_LENGTH = 120;
+
+/**
+ * 框架动态生成的无语义 ID 正则 — 从快照中过滤掉。
+ *
+ * 这些 ID 每次渲染都会变，输出到快照中只会浪费 token 并误导 AI：
+ * - Element Plus: `el-id-1835-331`, `el-popper-container-7387`, `el-tooltip-xxx` 等
+ * - Headless UI: `headlessui-menu-button-1`
+ * - Radix UI: `radix-:r0:`
+ * - React useId: `:r0:`, `:r1a:`
+ * - Naive UI: `n-123`
+ * - Ant Design (rc-*): `rc-menu-1`, `rc_select-2`
+ * - 纯数字 ID: `1234`（通常是动态生成的）
+ */
+const DYNAMIC_ID_RE = /^(?:el-[-a-z]+-\d|headlessui-|radix-[:r]|:r\d|n-\d|rc[-_]\w+-\d|\d+$)/;
 /** 选项列表放宽时的子节点上限（仍保留硬上限，避免快照无限膨胀）。 */
 const MAX_EXPANDED_LIST_CHILDREN = 120;
 /** 定向放宽 children 的硬上限。 */
@@ -560,9 +574,9 @@ export function generateSnapshot(
     // 收集有意义的属性（精简版：只保留对 AI 操作有用的信息）
     const attrs: string[] = [];
 
-    // 1. id — 最重要的标识信息
+    // 1. id — 最重要的标识信息（过滤掉框架动态生成的无语义 ID）
     const elId = el.getAttribute("id");
-    if (elId) attrs.push(`id="${elId}"`);
+    if (elId && !DYNAMIC_ID_RE.test(elId)) attrs.push(`id="${elId}"`);
 
     // 2. class — 保留第 1 个有语义的类名（不论交互与否，class 对 AI 识别元素语义有价值）
     const className = el.getAttribute("class")?.trim();
@@ -747,4 +761,79 @@ export function generateSnapshot(
   const output = walk(root, 0, "") || "(空页面)";
   if (!truncatedByNodeBudget) return output;
   return `${output}\n... (snapshot truncated: maxNodes=${maxNodes})`;
+}
+
+// ─── 聚焦快照 ───
+
+/** 聚焦快照配置选项 */
+export type FocusedSnapshotOptions = {
+  /** 目标元素（通过 RefStore 外部查找后传入） */
+  targetElement: Element;
+  /** 向上爬几层祖先（默认 3） */
+  ancestorLevels?: number;
+  /** 是否包含兄弟节点（默认 true） */
+  includeSiblings?: boolean;
+  /** 子节点最大展开深度（默认 6） */
+  childDepth?: number;
+  /** 复用现有选项 */
+  refStore?: SnapshotRefStore;
+  maxTextLength?: number;
+  maxChildren?: number;
+  listenerEvents?: string[];
+  classNameFilter?: string[] | false;
+};
+
+/**
+ * 生成聚焦快照 — 只包含目标元素的祖先链 + 兄弟 + 子树。
+ *
+ * 用于微任务执行阶段，大幅减少 token 消耗。
+ * 输出格式与 generateSnapshot 一致，AI 无感知切换。
+ *
+ * 策略：
+ * 1. 从 targetElement 向上爬 ancestorLevels 层找到 focus root
+ * 2. 对 focus root 调用 generateSnapshot（较小的 maxNodes/maxDepth）
+ * 3. 如果 focus root 为 body 或找不到，退化为普通快照
+ */
+export function generateFocusedSnapshot(options: FocusedSnapshotOptions): string {
+  const {
+    targetElement,
+    ancestorLevels = 3,
+    includeSiblings = true,
+    childDepth = 6,
+    refStore,
+    maxTextLength,
+    maxChildren,
+    listenerEvents,
+    classNameFilter,
+  } = options;
+
+  // 向上爬 ancestorLevels 层找到 focus root
+  let focusRoot: Element = targetElement;
+  for (let i = 0; i < ancestorLevels; i++) {
+    if (focusRoot.parentElement && focusRoot.parentElement !== document.documentElement) {
+      focusRoot = focusRoot.parentElement;
+    } else {
+      break;
+    }
+  }
+
+  // 如果 focus root 就是 body，没有聚焦意义，返回空让上层 fallback
+  if (focusRoot === document.body) {
+    return "";
+  }
+
+  // 对 focus root 生成快照（较小参数）
+  const snapshot = generateSnapshot(focusRoot, {
+    maxDepth: childDepth,
+    viewportOnly: false, // 聚焦区域不裁剪视口
+    pruneLayout: true,
+    maxNodes: includeSiblings ? 200 : 120,
+    maxChildren: maxChildren ?? 25,
+    maxTextLength: maxTextLength ?? 40,
+    refStore,
+    listenerEvents,
+    classNameFilter,
+  });
+
+  return snapshot;
 }
